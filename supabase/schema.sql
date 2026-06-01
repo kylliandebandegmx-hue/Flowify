@@ -230,6 +230,12 @@ create policy "playlist tracks deletable through membership"
   on public.playlist_tracks for delete
   using (public.can_access_playlist(playlist_id));
 
+drop function if exists public.add_track_to_playlist(uuid, text, integer, jsonb);
+drop function if exists public.remove_track_from_playlist(uuid, text);
+drop function if exists public.delete_playlist(uuid);
+drop function if exists public.join_playlist_by_code(text);
+drop function if exists public.regenerate_playlist_invite_code(uuid);
+
 create or replace function public.add_track_to_playlist(
   target_playlist_id uuid,
   target_youtube_id text,

@@ -19,6 +19,20 @@ export function clearYoutubeApiKey(): void {
   writeStorage(YOUTUBE_KEY_STORAGE_KEY, '');
 }
 
+export function getFlowifyApiBaseUrl(): string {
+  return flowifyApiBase;
+}
+
+export function saveFlowifyApiBaseUrl(value: string): void {
+  flowifyApiBase = normalizeApiBase(value);
+  writeStorage(FLOWIFY_API_STORAGE_KEY, flowifyApiBase);
+}
+
+export function clearFlowifyApiBaseUrl(): void {
+  writeStorage(FLOWIFY_API_STORAGE_KEY, '');
+  flowifyApiBase = normalizeApiBase(import.meta.env.VITE_FLOWIFY_API_URL || '');
+}
+
 export async function getHealth(): Promise<ApiHealth> {
   const youtubeConfigured = Boolean(getYoutubeApiKey());
   const apiHealth = await detectApiHealth();

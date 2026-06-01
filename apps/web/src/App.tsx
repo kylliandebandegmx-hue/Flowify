@@ -33,12 +33,15 @@ import {
 } from 'react';
 import {
   clearYoutubeApiKey,
+  clearFlowifyApiBaseUrl,
   downloadTrack,
+  getFlowifyApiBaseUrl,
   getHealth,
   getTrending,
   getYoutubeApiKey,
   hasYtdlpAudioApi,
   resolveYouTubeUrl,
+  saveFlowifyApiBaseUrl,
   saveYoutubeApiKey,
   searchTracks,
   streamUrl,
@@ -80,7 +83,9 @@ export default function App() {
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
+  const [settingsFlowifyApiUrl, setSettingsFlowifyApiUrl] = useState(() => getFlowifyApiBaseUrl());
   const [hasYoutubeKey, setHasYoutubeKey] = useState(() => Boolean(getYoutubeApiKey()));
+  const [hasFlowifyApi, setHasFlowifyApi] = useState(() => hasYtdlpAudioApi());
   const [nextPageToken, setNextPageToken] = useState('');
   const [view, setView] = useState<ViewMode>('home');
   const [loading, setLoading] = useState(false);
@@ -135,9 +140,13 @@ export default function App() {
   const refreshHealth = useCallback(async () => {
     setHealthLoading(true);
     try {
-      setHealth(await getHealth());
+      const nextHealth = await getHealth();
+      setHealth(nextHealth);
+      setHasFlowifyApi(hasYtdlpAudioApi());
+      setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
     } catch {
       setHealth({ ok: false, youtubeConfigured: false, ytdlpAvailable: false });
+      setHasFlowifyApi(hasYtdlpAudioApi());
     } finally {
       setHealthLoading(false);
     }
@@ -374,9 +383,16 @@ export default function App() {
   const saveSettings = async (event: FormEvent) => {
     event.preventDefault();
     saveYoutubeApiKey(settingsYoutubeKey);
+    if (settingsFlowifyApiUrl.trim()) {
+      saveFlowifyApiBaseUrl(settingsFlowifyApiUrl);
+    } else {
+      clearFlowifyApiBaseUrl();
+    }
     setSettingsYoutubeKey(getYoutubeApiKey());
+    setSettingsFlowifyApiUrl(getFlowifyApiBaseUrl());
     setHasYoutubeKey(Boolean(getYoutubeApiKey()));
-    setMessage('Cle YouTube sauvegardee.');
+    setHasFlowifyApi(hasYtdlpAudioApi());
+    setMessage('Parametres sauvegardes.');
     await refreshHealth();
     if (user) await loadTrending();
   };
@@ -386,6 +402,14 @@ export default function App() {
     setSettingsYoutubeKey('');
     setHasYoutubeKey(false);
     setMessage('Cle YouTube supprimee de cet appareil.');
+    await refreshHealth();
+  };
+
+  const removeFlowifyApiUrl = async () => {
+    clearFlowifyApiBaseUrl();
+    setSettingsFlowifyApiUrl(getFlowifyApiBaseUrl());
+    setHasFlowifyApi(hasYtdlpAudioApi());
+    setMessage('URL API Flowify supprimee de cet appareil.');
     await refreshHealth();
   };
 
@@ -492,10 +516,11 @@ export default function App() {
     setCurrentTime(0);
     setDuration(parseDisplayDuration(track.duration));
 
-    const ytdlpReady = hasYtdlpAudioApi() && health?.ytdlpAvailable !== false;
+    const apiConfigured = hasYtdlpAudioApi();
+    const ytdlpReady = apiConfigured && health?.ytdlpAvailable !== false;
     if (!ytdlpReady) {
       setPlaying(false);
-      setMessage('Lecture uniquement via yt-dlp: le service yt-dlp est indisponible.');
+      setMessage(apiConfigured ? 'API Flowify detectee, mais yt-dlp ne repond pas.' : 'API Flowify manquante: ajoute son URL dans Parametres pour activer yt-dlp.');
       return;
     }
 
@@ -600,9 +625,9 @@ export default function App() {
     if (!hasYoutubeKey) return 'Cle YouTube manquante';
     if (!health?.youtubeConfigured) return 'YouTube non configure';
     if (health.ytdlpAvailable) return 'YouTube + yt-dlp prets';
-    if (hasYtdlpAudioApi()) return 'yt-dlp indisponible';
-    return 'yt-dlp non configure';
-  }, [hasYoutubeKey, health, healthLoading]);
+    if (hasFlowifyApi) return 'API Flowify OK, yt-dlp indisponible';
+    return 'API Flowify manquante';
+  }, [hasFlowifyApi, hasYoutubeKey, health, healthLoading]);
 
   const heading = useMemo(() => {
     if (view === 'library') return 'Titres sauvegardes';
@@ -804,7 +829,7 @@ export default function App() {
             {view === 'settings' ? (
               <section className="settings-grid">
                 <form className="settings-card settings-form" onSubmit={saveSettings}>
-                  <h2>Cle YouTube</h2>
+                  <h2>Connexions</h2>
                   <label>
                     Cle YouTube Data API v3
                     <input
@@ -812,6 +837,15 @@ export default function App() {
                       onChange={(event) => setSettingsYoutubeKey(event.target.value)}
                       placeholder="AIza..."
                       type="password"
+                    />
+                  </label>
+                  <label>
+                    URL API Flowify yt-dlp
+                    <input
+                      value={settingsFlowifyApiUrl}
+                      onChange={(event) => setSettingsFlowifyApiUrl(event.target.value)}
+                      placeholder="https://ton-api-flowify.onrender.com"
+                      type="url"
                     />
                   </label>
                   <div className="settings-actions">
@@ -822,6 +856,11 @@ export default function App() {
                     {hasYoutubeKey && (
                       <button className="muted-action" onClick={removeYoutubeKey} type="button">
                         Supprimer la cle
+                      </button>
+                    )}
+                    {hasFlowifyApi && (
+                      <button className="muted-action" onClick={removeFlowifyApiUrl} type="button">
+                        Supprimer l'URL API
                       </button>
                     )}
                   </div>
@@ -1025,15 +1064,58 @@ function parseDisplayDuration(value: string) {
 }
 
 function errorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = readableErrorMessage(error);
   if (message.includes('playlists.invite_code')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }
   if (message.includes("Could not find the 'invite_code' column")) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }
+  if (message.includes("Could not find the table 'public.saved_tracks'")) {
+    return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
+  }
+  if (message.includes("Could not find the table 'public.playlists'")) {
+    return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
+  }
   if (message.includes('playlist_members_1.joined_at')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }
+  if (message.includes('row-level security policy') && message.includes('playlist_tracks')) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes('Could not find the function public.add_track_to_playlist')) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes('Could not find the function public.delete_playlist')) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes('Could not find the function public.join_playlist_by_code')) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.toLowerCase().includes('code invitation invalide')) {
+    return 'Code invitation invalide.';
+  }
+  if (message.toLowerCase().includes('playlist inaccessible')) {
+    return "Tu n'as pas acces a cette playlist.";
+  }
   return message;
+}
+
+function readableErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const fields = ['message', 'details', 'hint', 'code', 'error'];
+    const record = error as Record<string, unknown>;
+    for (const field of fields) {
+      const value = record[field];
+      if (typeof value === 'string' && value.trim()) return value;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return 'Erreur inconnue';
+    }
+  }
+  return String(error);
 }
