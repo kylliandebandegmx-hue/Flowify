@@ -1,4 +1,4 @@
-const CACHE_NAME = 'flowify-shell-v1';
+const CACHE_NAME = 'flowify-shell-v2';
 const SHELL_FILES = ['./'];
 
 self.addEventListener('install', (event) => {
@@ -25,6 +25,11 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  if (url.pathname.endsWith('/flowify-config.json')) {
+    event.respondWith(fetch(request, { cache: 'no-store' }).catch(() => caches.match(request)));
+    return;
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith(

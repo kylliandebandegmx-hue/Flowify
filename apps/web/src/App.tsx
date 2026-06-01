@@ -145,7 +145,7 @@ export default function App() {
       setHasFlowifyApi(hasYtdlpAudioApi());
       setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
     } catch {
-      setHealth({ ok: false, youtubeConfigured: false, ytdlpAvailable: false });
+      setHealth({ ok: false, youtubeConfigured: false, ytdlpAvailable: false, apiReachable: false });
       setHasFlowifyApi(hasYtdlpAudioApi());
     } finally {
       setHealthLoading(false);
@@ -516,11 +516,23 @@ export default function App() {
     setCurrentTime(0);
     setDuration(parseDisplayDuration(track.duration));
 
+    let nextHealth = health;
+    if (!nextHealth?.ytdlpAvailable) {
+      try {
+        nextHealth = await getHealth();
+        setHealth(nextHealth);
+        setHasFlowifyApi(hasYtdlpAudioApi());
+        setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
+      } catch {
+        nextHealth = { ok: false, youtubeConfigured: hasYoutubeKey, ytdlpAvailable: false, apiReachable: false };
+        setHealth(nextHealth);
+      }
+    }
+
     const apiConfigured = hasYtdlpAudioApi();
-    const ytdlpReady = apiConfigured && health?.ytdlpAvailable !== false;
-    if (!ytdlpReady) {
+    if (!apiConfigured || !nextHealth?.ytdlpAvailable) {
       setPlaying(false);
-      setMessage(apiConfigured && health?.apiReachable !== false ? 'API Flowify detectee, mais yt-dlp ne repond pas.' : 'API Flowify non joignable: verifie l URL dans Parametres.');
+      setMessage(apiConfigured && nextHealth?.apiReachable !== false ? 'API Flowify detectee, mais yt-dlp ne repond pas.' : 'API Flowify non joignable: verifie l URL dans Parametres.');
       return;
     }
 
