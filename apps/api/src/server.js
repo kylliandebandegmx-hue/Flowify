@@ -276,27 +276,49 @@ async function ensurePlayableAudioFile(videoId) {
 
 async function buildPlayableAudioFile(videoId) {
   await fs.mkdir(streamDir, { recursive: true });
-  const output = path.join(streamDir, `${videoId}.%(ext)s`);
+  const finalPath = path.join(streamDir, `${videoId}.mp3`);
+  const tempPath = path.join(streamDir, `${videoId}.part.mp3`);
+  const remoteUrl = await getAudioStreamUrl(videoId);
 
-  await runYtdlp([
-    '--no-playlist',
-    '--format',
-    'bestaudio/best',
-    '--extract-audio',
-    '--audio-format',
+  await fs.rm(tempPath, { force: true }).catch(() => undefined);
+  await runProcess(ffmpegPath, [
+    '-y',
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-nostdin',
+    '-user_agent',
+    'Flowify/0.1',
+    '-i',
+    remoteUrl,
+    '-vn',
+    '-codec:a',
+    'libmp3lame',
+    '-b:a',
+    '160k',
+    '-f',
     'mp3',
-    '--audio-quality',
-    '5',
-    '--ffmpeg-location',
-    ffmpegPath,
-    '--output',
-    output,
-    youtubeWatchUrl(videoId),
+    tempPath,
   ], 10 * 60 * 1000);
+  await fs.rename(tempPath, finalPath);
 
   const audioPath = await findStreamFile(videoId);
   if (!audioPath) throw httpError(500, 'yt-dlp finished but no playable MP3 was produced');
   return audioPath;
+}
+
+async function getAudioStreamUrl(videoId) {
+  const { stdout } = await runYtdlp([
+    '--no-playlist',
+    '--format',
+    'bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio',
+    '--get-url',
+    youtubeWatchUrl(videoId),
+  ], 45_000);
+
+  const streamUrl = stdout.split(/\r?\n/).find((line) => line.startsWith('http'));
+  if (!streamUrl) throw httpError(502, 'yt-dlp did not return an audio URL');
+  return streamUrl;
 }
 
 async function findStreamFile(videoId) {
