@@ -2,20 +2,15 @@
 
 Flowify est une application musique PWA + APK Android.
 
-Elle utilise Supabase pour les comptes/playlists, YouTube Data API v3 pour la recherche, `yt-dlp` cote API pour l'audio, GitHub Pages pour le PWA et GitHub Actions pour l'APK.
+Dans l'app, l'utilisateur doit seulement renseigner sa cle YouTube Data API v3 dans `Parametres`. Les tendances et recherches YouTube apparaissent ensuite directement.
 
-## Configuration Dans L'app
+## Important
 
-Dans Flowify, ouvre `Parametres`, puis remplis :
-
-- `URL API Flowify` : l'URL publique de ton API Node/Express.
-- `Cle YouTube Data API v3` : ta cle Google/YouTube.
-
-La cle YouTube est sauvegardee sur l'appareil et envoyee uniquement a ton API Flowify avec le header `X-YouTube-Api-Key`.
+La version actuelle affiche les musiques via YouTube Data API v3 directement depuis l'app. Le dossier `apps/api` avec `yt-dlp` reste dans le projet, mais il n'est plus necessaire pour afficher les musiques.
 
 ## Supabase
 
-Execute `supabase/schema.sql` dans le SQL editor Supabase. Le schema cree les playlists, les membres, les codes d'invitation, la fonction pour rejoindre par code et la synchronisation Realtime.
+Execute `supabase/schema.sql` dans le SQL editor Supabase. Le schema gere les comptes, titres sauvegardes, playlists, membres, codes d'invitation et Realtime.
 
 ## GitHub
 
@@ -25,11 +20,7 @@ Les workflows utilisent Node 22 :
 - `.github/workflows/android.yml` genere l'APK debug.
 - `.github/workflows/check.yml` lance les checks.
 
-APK local :
-
-```text
-android/app/build/outputs/apk/debug/app-debug.apk
-```
+## APK
 
 Build local Windows :
 
@@ -37,11 +28,8 @@ Build local Windows :
 npm run android:apk:windows
 ```
 
-## Verification
+APK local :
 
-```bash
-npm run check
-npm run build:web
-npm run android:apk:windows
-npm audit
+```text
+android/app/build/outputs/apk/debug/app-debug.apk
 ```

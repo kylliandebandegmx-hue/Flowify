@@ -1,22 +1,10 @@
 import type { ApiHealth, SearchResult, Track } from '../types';
 
-const API_URL_STORAGE_KEY = 'flowify-api-url';
 const YOUTUBE_KEY_STORAGE_KEY = 'flowify-youtube-api-key';
-
-const configuredApiUrl = import.meta.env.VITE_FLOWIFY_API_URL as string | undefined;
-const defaultDevApiUrl = import.meta.env.DEV ? 'http://localhost:8787' : '';
-const fallbackApiUrl = trimTrailingSlash(configuredApiUrl || defaultDevApiUrl);
-
-export function getApiBaseUrl(): string {
-  return trimTrailingSlash(readStorage(API_URL_STORAGE_KEY) || fallbackApiUrl);
-}
+const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 
 export function getYoutubeApiKey(): string {
   return readStorage(YOUTUBE_KEY_STORAGE_KEY);
-}
-
-export function saveApiBaseUrl(value: string): void {
-  writeStorage(API_URL_STORAGE_KEY, trimTrailingSlash(value));
 }
 
 export function saveYoutubeApiKey(value: string): void {
@@ -27,60 +15,181 @@ export function clearYoutubeApiKey(): void {
   writeStorage(YOUTUBE_KEY_STORAGE_KEY, '');
 }
 
-export function isApiConfigured(): boolean {
-  return Boolean(getApiBaseUrl());
-}
-
 export async function getHealth(): Promise<ApiHealth> {
-  return request<ApiHealth>('/health');
+  const youtubeConfigured = Boolean(getYoutubeApiKey());
+  return {
+    ok: youtubeConfigured,
+    youtubeConfigured,
+    ytdlpAvailable: false,
+  };
 }
 
 export async function searchTracks(query: string, pageToken = ''): Promise<SearchResult> {
-  const params = new URLSearchParams({ query, maxResults: '24' });
+  const params = new URLSearchParams({
+    part: 'snippet',
+    q: query,
+    type: 'video',
+    videoCategoryId: '10',
+    maxResults: '24',
+    order: 'relevance',
+  });
   if (pageToken) params.set('pageToken', pageToken);
-  return request<SearchResult>(`/api/search?${params}`);
+
+  const search = await youtubeFetch<YouTubeSearchResponse>('/search', params);
+  const ids = search.items.map((item) => item.id.videoId).filter(Boolean);
+  const details = await getVideoDetails(ids);
+
+  return {
+    tracks: search.items
+      .map((item) => trackFromSnippet(item.id.videoId, item.snippet, details.get(item.id.videoId)))
+      .filter((track): track is Track => Boolean(track)),
+    nextPageToken: search.nextPageToken || '',
+    totalResults: search.pageInfo?.totalResults || 0,
+  };
 }
 
 export async function getTrending(): Promise<SearchResult> {
-  return request<SearchResult>('/api/trending?regionCode=FR&maxResults=24');
+  const params = new URLSearchParams({
+    part: 'snippet,contentDetails,statistics',
+    chart: 'mostPopular',
+    videoCategoryId: '10',
+    regionCode: 'FR',
+    maxResults: '24',
+  });
+
+  const data = await youtubeFetch<YouTubeVideosResponse>('/videos', params);
+  return {
+    tracks: data.items.map((item) => trackFromVideo(item)),
+    nextPageToken: '',
+    totalResults: data.items.length,
+  };
 }
 
 export async function resolveYouTubeUrl(url: string): Promise<SearchResult> {
-  return request<SearchResult>(`/api/resolve?url=${encodeURIComponent(url)}`);
+  const { videoId, playlistId } = parseYouTubeUrl(url);
+  if (playlistId && !videoId) return getPlaylistTracks(playlistId);
+  if (!videoId) throw new Error('URL YouTube non reconnue');
+
+  const details = await getVideoDetails([videoId]);
+  const item = details.get(videoId);
+  if (!item) throw new Error('Video introuvable');
+
+  return {
+    tracks: [trackFromVideo(item)],
+    nextPageToken: '',
+    totalResults: 1,
+  };
 }
 
-export async function downloadTrack(track: Track): Promise<{ filename: string; url: string }> {
-  return request(`/api/download/${encodeURIComponent(track.id)}`, {
-    method: 'POST',
+export async function downloadTrack(_track?: Track): Promise<{ filename: string; url: string }> {
+  throw new Error('Telechargement indisponible dans cette version.');
+}
+
+export function streamUrl(): string {
+  return '';
+}
+
+async function getPlaylistTracks(playlistId: string): Promise<SearchResult> {
+  const params = new URLSearchParams({
+    part: 'snippet',
+    playlistId,
+    maxResults: '50',
   });
+  const data = await youtubeFetch<YouTubePlaylistResponse>('/playlistItems', params);
+  const ids = data.items
+    .map((item) => item.snippet.resourceId?.videoId)
+    .filter((id): id is string => Boolean(id));
+  const details = await getVideoDetails(ids);
+
+  return {
+    tracks: ids
+      .map((id) => details.get(id))
+      .filter((item): item is YouTubeVideoItem => Boolean(item))
+      .map((item) => trackFromVideo(item)),
+    nextPageToken: data.nextPageToken || '',
+    totalResults: ids.length,
+  };
 }
 
-export function streamUrl(track: Track): string {
-  const baseUrl = getApiBaseUrl();
-  if (!baseUrl) return '';
-  return `${baseUrl}/api/stream/${encodeURIComponent(track.id)}`;
+async function getVideoDetails(ids: string[]): Promise<Map<string, YouTubeVideoItem>> {
+  const cleanIds = [...new Set(ids.filter(Boolean))];
+  if (!cleanIds.length) return new Map();
+
+  const params = new URLSearchParams({
+    part: 'snippet,contentDetails,statistics',
+    id: cleanIds.join(','),
+  });
+  const data = await youtubeFetch<YouTubeVideosResponse>('/videos', params);
+  return new Map(data.items.map((item) => [item.id, item]));
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const baseUrl = getApiBaseUrl();
-  if (!baseUrl) {
-    throw new Error('API Flowify non configuree');
+async function youtubeFetch<T>(endpoint: string, params: URLSearchParams): Promise<T> {
+  const key = getYoutubeApiKey();
+  if (!key) {
+    throw new Error('Entre ta cle YouTube Data API v3 dans Parametres.');
   }
 
-  const headers = new Headers(init?.headers);
-  const youtubeKey = getYoutubeApiKey();
-  if (youtubeKey) headers.set('X-YouTube-Api-Key', youtubeKey);
-
-  const response = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers,
-  });
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  params.set('key', key);
+  const response = await fetch(`${YOUTUBE_API_BASE}${endpoint}?${params.toString()}`);
+  const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload?.error || `Erreur API ${response.status}`);
+    throw new Error(payload?.error?.message || `Erreur YouTube ${response.status}`);
   }
   return payload as T;
+}
+
+function trackFromSnippet(id: string, snippet: YouTubeSnippet, details?: YouTubeVideoItem): Track | null {
+  if (!id) return null;
+  return {
+    id,
+    title: decodeText(snippet.title || 'Titre inconnu'),
+    channel: decodeText(snippet.channelTitle || ''),
+    thumbnail: bestThumbnail(snippet.thumbnails),
+    duration: details?.contentDetails?.duration ? parseDuration(details.contentDetails.duration) : '',
+    viewCount: details?.statistics?.viewCount || '',
+    publishedAt: snippet.publishedAt || '',
+    description: decodeText(snippet.description || ''),
+  };
+}
+
+function trackFromVideo(item: YouTubeVideoItem): Track {
+  return trackFromSnippet(item.id, item.snippet, item) as Track;
+}
+
+function bestThumbnail(thumbnails: YouTubeThumbnails = {}): string {
+  return (
+    thumbnails.maxres?.url ||
+    thumbnails.standard?.url ||
+    thumbnails.high?.url ||
+    thumbnails.medium?.url ||
+    thumbnails.default?.url ||
+    ''
+  );
+}
+
+function parseDuration(iso: string): string {
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return '';
+  const hours = Number(match[1] || 0);
+  const minutes = Number(match[2] || 0);
+  const seconds = Number(match[3] || 0);
+  if (hours) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function parseYouTubeUrl(rawUrl: string) {
+  const videoMatch = rawUrl.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/);
+  const playlistMatch = rawUrl.match(/[?&]list=([A-Za-z0-9_-]+)/);
+  return {
+    videoId: videoMatch?.[1] || '',
+    playlistId: playlistMatch?.[1] || '',
+  };
+}
+
+function decodeText(value: string): string {
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = value;
+  return textarea.value;
 }
 
 function readStorage(key: string): string {
@@ -100,6 +209,47 @@ function writeStorage(key: string, value: string): void {
   }
 }
 
-function trimTrailingSlash(value: string): string {
-  return value.trim().replace(/\/+$/, '');
+interface YouTubeSearchResponse {
+  items: Array<{
+    id: { videoId: string };
+    snippet: YouTubeSnippet;
+  }>;
+  nextPageToken?: string;
+  pageInfo?: { totalResults: number };
+}
+
+interface YouTubeVideosResponse {
+  items: YouTubeVideoItem[];
+}
+
+interface YouTubePlaylistResponse {
+  items: Array<{
+    snippet: YouTubeSnippet & {
+      resourceId?: { videoId?: string };
+    };
+  }>;
+  nextPageToken?: string;
+}
+
+interface YouTubeVideoItem {
+  id: string;
+  snippet: YouTubeSnippet;
+  contentDetails?: { duration?: string };
+  statistics?: { viewCount?: string };
+}
+
+interface YouTubeSnippet {
+  title?: string;
+  description?: string;
+  channelTitle?: string;
+  publishedAt?: string;
+  thumbnails?: YouTubeThumbnails;
+}
+
+interface YouTubeThumbnails {
+  default?: { url: string };
+  medium?: { url: string };
+  high?: { url: string };
+  standard?: { url: string };
+  maxres?: { url: string };
 }

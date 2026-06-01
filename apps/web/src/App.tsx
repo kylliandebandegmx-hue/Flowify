@@ -22,7 +22,6 @@ import {
   Trash2,
   UserPlus,
   Users,
-  WifiOff,
 } from 'lucide-react';
 import {
   FormEvent,
@@ -35,13 +34,10 @@ import {
 import {
   clearYoutubeApiKey,
   downloadTrack,
-  getApiBaseUrl,
   getHealth,
   getTrending,
   getYoutubeApiKey,
-  isApiConfigured,
   resolveYouTubeUrl,
-  saveApiBaseUrl,
   saveYoutubeApiKey,
   searchTracks,
   streamUrl,
@@ -82,7 +78,6 @@ export default function App() {
   const [activePlaylistId, setActivePlaylistId] = useState('');
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
-  const [settingsApiUrl, setSettingsApiUrl] = useState(() => getApiBaseUrl());
   const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
   const [hasYoutubeKey, setHasYoutubeKey] = useState(() => Boolean(getYoutubeApiKey()));
   const [nextPageToken, setNextPageToken] = useState('');
@@ -137,10 +132,6 @@ export default function App() {
   }, []);
 
   const refreshHealth = useCallback(async () => {
-    if (!isApiConfigured()) {
-      setHealth({ ok: false, youtubeConfigured: false, ytdlpAvailable: false });
-      return;
-    }
     setHealthLoading(true);
     try {
       setHealth(await getHealth());
@@ -379,12 +370,10 @@ export default function App() {
 
   const saveSettings = async (event: FormEvent) => {
     event.preventDefault();
-    saveApiBaseUrl(settingsApiUrl);
     saveYoutubeApiKey(settingsYoutubeKey);
-    setSettingsApiUrl(getApiBaseUrl());
     setSettingsYoutubeKey(getYoutubeApiKey());
     setHasYoutubeKey(Boolean(getYoutubeApiKey()));
-    setMessage('Parametres sauvegardes.');
+    setMessage('Cle YouTube sauvegardee.');
     await refreshHealth();
     if (user) await loadTrending();
   };
@@ -478,7 +467,14 @@ export default function App() {
     setQueueIndex(index);
     setMessage('');
 
-    audio.src = streamUrl(track);
+    const source = streamUrl();
+    if (!source) {
+      setPlaying(false);
+      setMessage('Les titres apparaissent avec la cle YouTube. La lecture audio directe n est pas active dans cette version.');
+      return;
+    }
+
+    audio.src = source;
     audio.load();
     try {
       await audio.play();
@@ -570,12 +566,10 @@ export default function App() {
 
   const statusLabel = useMemo(() => {
     if (healthLoading) return 'Verification';
-    if (!settingsApiUrl.trim()) return 'API manquante';
-    if (!health?.ok) return 'API hors ligne';
-    if (!health.youtubeConfigured) return 'YouTube non configure';
-    if (!health.ytdlpAvailable) return 'yt-dlp absent';
-    return 'Pret';
-  }, [health, healthLoading, settingsApiUrl]);
+    if (!hasYoutubeKey) return 'Cle YouTube manquante';
+    if (!health?.youtubeConfigured) return 'YouTube non configure';
+    return 'YouTube pret';
+  }, [hasYoutubeKey, health, healthLoading]);
 
   const heading = useMemo(() => {
     if (view === 'library') return 'Titres sauvegardes';
@@ -747,12 +741,6 @@ export default function App() {
                     {activePlaylist.inviteCode}
                   </button>
                 )}
-                {!health?.ytdlpAvailable && (
-                  <span className="warning-pill">
-                    <WifiOff size={16} />
-                    yt-dlp
-                  </span>
-                )}
                 {installPrompt && (
                   <button onClick={installApp} type="button">
                     <Download size={18} />
@@ -772,16 +760,7 @@ export default function App() {
             {view === 'settings' ? (
               <section className="settings-grid">
                 <form className="settings-card settings-form" onSubmit={saveSettings}>
-                  <h2>Connexion API</h2>
-                  <label>
-                    URL API Flowify
-                    <input
-                      value={settingsApiUrl}
-                      onChange={(event) => setSettingsApiUrl(event.target.value)}
-                      placeholder="https://ton-api-flowify.example.com"
-                      type="url"
-                    />
-                  </label>
+                  <h2>Cle YouTube</h2>
                   <label>
                     Cle YouTube Data API v3
                     <input
