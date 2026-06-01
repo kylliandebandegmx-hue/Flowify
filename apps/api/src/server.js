@@ -17,13 +17,13 @@ const downloadDir = path.resolve(
   process.cwd(),
   process.env.DOWNLOAD_DIR || path.join(__dirname, '..', '.flowify-downloads'),
 );
+const streamDir = path.join(downloadDir, 'streams');
 const staticDir = path.resolve(
   process.cwd(),
   process.env.STATIC_DIR || path.join(__dirname, '..', '..', 'web', 'dist'),
 );
 
-const streamCache = new Map();
-const cacheTtlMs = 10 * 60 * 1000;
+const streamBuilds = new Map();
 const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
 
 app.use(express.json({ limit: '1mb' }));
@@ -134,8 +134,11 @@ app.get('/api/resolve', async (req, res, next) => {
 app.get('/api/stream/:videoId', async (req, res, next) => {
   try {
     const videoId = ensureVideoId(req.params.videoId);
-    const remoteUrl = await getAudioStreamUrl(videoId);
-    streamCompatibleAudio(remoteUrl, req, res, next);
+    const audioPath = await ensurePlayableAudioFile(videoId);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.type('audio/mpeg');
+    res.sendFile(audioPath);
   } catch (err) {
     next(err);
   }
@@ -259,79 +262,51 @@ async function getPlaylistTracks(req, playlistId) {
   };
 }
 
-async function getAudioStreamUrl(videoId) {
-  const cached = streamCache.get(videoId);
-  if (cached && cached.expiresAt > Date.now()) return cached.url;
+async function ensurePlayableAudioFile(videoId) {
+  const existing = await findStreamFile(videoId);
+  if (existing) return existing;
 
-  const { stdout } = await runYtdlp([
-    '--no-playlist',
-    '--format',
-    'bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio',
-    '--get-url',
-    youtubeWatchUrl(videoId),
-  ], 45_000);
-
-  const streamUrl = stdout.split(/\r?\n/).find((line) => line.startsWith('http'));
-  if (!streamUrl) throw httpError(502, 'yt-dlp did not return an audio URL');
-  streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + cacheTtlMs });
-  return streamUrl;
+  if (!streamBuilds.has(videoId)) {
+    streamBuilds.set(videoId, buildPlayableAudioFile(videoId).finally(() => {
+      streamBuilds.delete(videoId);
+    }));
+  }
+  return streamBuilds.get(videoId);
 }
 
-function streamCompatibleAudio(remoteUrl, req, res, next) {
-  res.status(200);
-  res.setHeader('Content-Type', 'audio/mpeg');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Accept-Ranges', 'none');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
+async function buildPlayableAudioFile(videoId) {
+  await fs.mkdir(streamDir, { recursive: true });
+  const output = path.join(streamDir, `${videoId}.%(ext)s`);
 
-  const ffmpeg = spawn(ffmpegPath, [
-    '-hide_banner',
-    '-loglevel',
-    'error',
-    '-nostdin',
-    '-user_agent',
-    'Flowify/0.1',
-    '-i',
-    remoteUrl,
-    '-vn',
-    '-codec:a',
-    'libmp3lame',
-    '-b:a',
-    '160k',
-    '-f',
+  await runYtdlp([
+    '--no-playlist',
+    '--format',
+    'bestaudio/best',
+    '--extract-audio',
+    '--audio-format',
     'mp3',
-    'pipe:1',
-  ], { windowsHide: true });
+    '--audio-quality',
+    '5',
+    '--ffmpeg-location',
+    ffmpegPath,
+    '--output',
+    output,
+    youtubeWatchUrl(videoId),
+  ], 10 * 60 * 1000);
 
-  let stderr = '';
-  let closedByClient = false;
+  const audioPath = await findStreamFile(videoId);
+  if (!audioPath) throw httpError(500, 'yt-dlp finished but no playable MP3 was produced');
+  return audioPath;
+}
 
-  req.on('close', () => {
-    closedByClient = true;
-    ffmpeg.kill('SIGTERM');
-  });
-
-  ffmpeg.stderr.on('data', (chunk) => {
-    stderr += chunk.toString();
-  });
-
-  ffmpeg.on('error', (error) => {
-    if (!res.headersSent) next(httpError(500, `ffmpeg failed to start: ${error.message}`));
-    else res.destroy(error);
-  });
-
-  ffmpeg.on('close', (code) => {
-    if (closedByClient) return;
-    if (code !== 0) {
-      const error = httpError(502, `ffmpeg exited with code ${code}: ${stderr}`);
-      if (!res.headersSent) next(error);
-      else res.destroy(error);
-      return;
-    }
-    res.end();
-  });
-
-  ffmpeg.stdout.pipe(res);
+async function findStreamFile(videoId) {
+  const preferred = path.join(streamDir, `${videoId}.mp3`);
+  try {
+    await fs.access(preferred);
+    return preferred;
+  } catch {
+    return '';
+  }
 }
 
 function runYtdlp(args, timeoutMs = 60_000) {

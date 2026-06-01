@@ -132,7 +132,7 @@ export async function downloadTrack(_track?: Track): Promise<{ filename: string;
 export function streamUrl(track: Track | string): string {
   if (!flowifyApiBase) return '';
   const videoId = typeof track === 'string' ? track : track.id;
-  return apiUrl(`/api/stream/${encodeURIComponent(videoId)}`);
+  return apiUrl(`/api/stream/${encodeURIComponent(videoId)}?play=${Date.now()}`);
 }
 
 export function hasYtdlpAudioApi(): boolean {
