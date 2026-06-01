@@ -31,6 +31,7 @@ CLOUD_UPLOAD_LIMIT=80mb
 ```
 
 `R2_PUBLIC_BASE_URL` peut rester vide : Flowify passe alors par `/api/cloud/stream`, ce qui evite une configuration CORS R2 en plus.
+`R2_BUCKET` doit etre seulement le nom du bucket, sans URL ni account ID.
 
 ## Supabase
 

@@ -27,6 +27,10 @@ export interface ApiHealth {
   ytdlpAvailable: boolean;
   apiReachable?: boolean;
   cloudStorageAvailable?: boolean;
+  cloudBucketConfigured?: boolean;
+  cloudBucketValid?: boolean;
+  cloudBucketName?: string;
+  cloudEndpointConfigured?: boolean;
   cloudPublicBaseUrl?: boolean;
 }
 

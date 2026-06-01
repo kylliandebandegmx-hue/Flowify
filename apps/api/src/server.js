@@ -23,7 +23,7 @@ const corsOrigin = process.env.CORS_ORIGIN || true;
 const r2AccountId = process.env.R2_ACCOUNT_ID || '';
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
-const r2Bucket = (process.env.R2_BUCKET || '').trim();
+const r2Bucket = normalizeR2BucketName(process.env.R2_BUCKET || '');
 const r2Endpoint = normalizeBaseUrl(process.env.R2_ENDPOINT || '');
 const r2PublicBaseUrl = normalizeBaseUrl(process.env.R2_PUBLIC_BASE_URL || '');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +65,9 @@ app.get('/health', async (req, res) => {
     jsRuntime: ytdlpJsRuntime,
     remoteComponents: ytdlpRemoteComponents,
     cloudStorageAvailable: hasR2Config(),
+    cloudBucketConfigured: Boolean(r2Bucket),
+    cloudBucketValid: isValidR2BucketName(r2Bucket),
+    cloudBucketName: r2Bucket,
     cloudEndpointConfigured: Boolean(getR2Endpoint()),
     cloudPublicBaseUrl: Boolean(r2PublicBaseUrl),
   });
@@ -545,15 +548,21 @@ function cookiesFromEnvironment() {
 }
 
 function hasR2Config() {
-  return Boolean(r2AccountId && r2AccessKeyId && r2SecretAccessKey && r2Bucket);
+  return Boolean(r2AccountId && r2AccessKeyId && r2SecretAccessKey && isValidR2BucketName(r2Bucket));
 }
 
 function getR2Client() {
+  if (!isValidR2BucketName(r2Bucket)) {
+    throw httpError(400, 'R2_BUCKET invalide: mets uniquement le nom du bucket Cloudflare, par exemple flowify-music.');
+  }
   if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
   if (!r2ClientInstance) {
     r2ClientInstance = new S3Client({
       region: 'auto',
       endpoint: getR2Endpoint(),
+      forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
       credentials: {
         accessKeyId: r2AccessKeyId,
         secretAccessKey: r2SecretAccessKey,
@@ -584,6 +593,28 @@ function ensureCloudKey(value) {
 
 function normalizeContentType(value) {
   return String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+}
+
+function normalizeR2BucketName(value) {
+  const clean = String(value || '').trim().replace(/^['"]|['"]$/g, '');
+  if (!clean) return '';
+
+  try {
+    const url = new URL(clean);
+    const pathParts = url.pathname.split('/').filter(Boolean);
+    return pathParts.at(-1) || clean;
+  } catch {
+    return clean.replace(/^s3:\/\//i, '').split('/').filter(Boolean).at(-1) || clean;
+  }
+}
+
+function isValidR2BucketName(value) {
+  const name = String(value || '');
+  return /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(name)
+    && !name.includes('..')
+    && !name.includes('.-')
+    && !name.includes('-.')
+    && !/^(\d{1,3}\.){3}\d{1,3}$/.test(name);
 }
 
 function parseContentLength(value) {

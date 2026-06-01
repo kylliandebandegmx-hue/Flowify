@@ -1255,6 +1255,9 @@ function errorMessage(error: unknown) {
   if (message.includes('Cloud R2 non configure')) {
     return 'Cloud R2 non configure sur Render: ajoute R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY et R2_BUCKET.';
   }
+  if (message.includes('R2_BUCKET invalide')) {
+    return 'R2_BUCKET invalide sur Render: mets uniquement le nom du bucket Cloudflare, exemple flowify-music.';
+  }
   if (message === 'Failed to fetch' || message.includes('Load failed')) {
     return 'API Flowify inaccessible depuis le navigateur. Attends le reveil Render puis actualise.';
   }
