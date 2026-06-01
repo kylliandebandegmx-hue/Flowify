@@ -594,7 +594,12 @@ export default function App() {
       });
       if (error) throw error;
 
-      await deleteCloudTrackObject(track.storageKey);
+      let storageDeleteFailed = false;
+      try {
+        await deleteCloudTrackObject(track.storageKey);
+      } catch {
+        storageDeleteFailed = true;
+      }
       setCloudTracks((previous) => previous.filter((item) => item.id !== track.id));
       setSavedTracks((previous) => previous.filter((item) => item.id !== track.id));
       setSavedIds((previous) => {
@@ -613,7 +618,9 @@ export default function App() {
       await loadCloudTracks(user);
       await loadSavedTracks(user);
       await loadPlaylists(user);
-      setMessage('Musique Cloud supprimee.');
+      setMessage(storageDeleteFailed
+        ? 'Musique supprimee de Flowify. Le fichier R2 peut rester dans le bucket.'
+        : 'Musique Cloud supprimee.');
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
