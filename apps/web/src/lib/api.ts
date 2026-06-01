@@ -41,6 +41,7 @@ export async function getHealth(): Promise<ApiHealth> {
       ok: apiHealth.ok || youtubeConfigured,
       youtubeConfigured: Boolean(apiHealth.youtubeConfigured || youtubeConfigured),
       ytdlpAvailable: Boolean(apiHealth.ytdlpAvailable),
+      apiReachable: true,
     };
   }
 
@@ -48,6 +49,7 @@ export async function getHealth(): Promise<ApiHealth> {
     ok: youtubeConfigured,
     youtubeConfigured,
     ytdlpAvailable: false,
+    apiReachable: false,
   };
 }
 
@@ -269,7 +271,7 @@ function apiUrl(path: string): string {
 }
 
 function normalizeApiBase(value: string): string {
-  return value.trim().replace(/\/+$/, '');
+  return value.trim().replace(/\/+$/, '').replace(/\/health$/i, '');
 }
 
 async function detectApiHealth(): Promise<ApiHealth | null> {

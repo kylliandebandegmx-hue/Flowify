@@ -19,6 +19,7 @@ export interface ApiHealth {
   ok: boolean;
   youtubeConfigured: boolean;
   ytdlpAvailable: boolean;
+  apiReachable?: boolean;
 }
 
 export interface SavedTrackRow {

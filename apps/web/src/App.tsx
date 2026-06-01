@@ -520,7 +520,7 @@ export default function App() {
     const ytdlpReady = apiConfigured && health?.ytdlpAvailable !== false;
     if (!ytdlpReady) {
       setPlaying(false);
-      setMessage(apiConfigured ? 'API Flowify detectee, mais yt-dlp ne repond pas.' : 'API Flowify manquante: ajoute son URL dans Parametres pour activer yt-dlp.');
+      setMessage(apiConfigured && health?.apiReachable !== false ? 'API Flowify detectee, mais yt-dlp ne repond pas.' : 'API Flowify non joignable: verifie l URL dans Parametres.');
       return;
     }
 
@@ -625,7 +625,8 @@ export default function App() {
     if (!hasYoutubeKey) return 'Cle YouTube manquante';
     if (!health?.youtubeConfigured) return 'YouTube non configure';
     if (health.ytdlpAvailable) return 'YouTube + yt-dlp prets';
-    if (hasFlowifyApi) return 'API Flowify OK, yt-dlp indisponible';
+    if (hasFlowifyApi && health.apiReachable) return 'API Flowify OK, yt-dlp indisponible';
+    if (hasFlowifyApi) return 'API Flowify non joignable';
     return 'API Flowify manquante';
   }, [hasFlowifyApi, hasYoutubeKey, health, healthLoading]);
 
