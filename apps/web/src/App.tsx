@@ -1339,6 +1339,9 @@ function errorMessage(error: unknown) {
   if (message.includes('no unique or exclusion constraint matching the ON CONFLICT specification')) {
     return 'Base Supabase pas a jour: execute le bloc SQL final pour corriger add_track_to_playlist.';
   }
+  if (message.includes('null value in column "track_id"') && message.includes('playlist_tracks')) {
+    return 'Base Supabase pas a jour: execute le bloc SQL final pour rendre track_id compatible.';
+  }
   if (message.includes('Could not find the function public.delete_playlist')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }

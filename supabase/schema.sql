@@ -81,6 +81,7 @@ create table if not exists public.playlist_tracks (
   id uuid primary key default gen_random_uuid(),
   playlist_id uuid not null references public.playlists(id) on delete cascade,
   youtube_id text not null,
+  track_id text,
   position integer not null default 0,
   track jsonb not null,
   added_by uuid references auth.users(id) on delete set null,
@@ -104,10 +105,23 @@ alter table public.playlist_tracks
 alter table public.playlist_tracks
   add column if not exists youtube_id text;
 
+alter table public.playlist_tracks
+  add column if not exists track_id text;
+
+alter table public.playlist_tracks
+  alter column track_id type text using track_id::text;
+
 update public.playlist_tracks
 set youtube_id = track->>'id'
 where youtube_id is null
 and track ? 'id';
+
+update public.playlist_tracks
+set track_id = coalesce(track_id, youtube_id, track->>'id')
+where track_id is null;
+
+alter table public.playlist_tracks
+  alter column track_id drop not null;
 
 create unique index if not exists playlist_tracks_playlist_youtube_idx
   on public.playlist_tracks (playlist_id, youtube_id)
@@ -293,13 +307,14 @@ begin
   update public.playlist_tracks
   set track = track_payload,
       position = target_position,
-      added_by = auth.uid()
+      added_by = auth.uid(),
+      track_id = target_youtube_id
   where playlist_id = target_playlist_id
-  and youtube_id = target_youtube_id;
+  and (youtube_id = target_youtube_id or track_id = target_youtube_id);
 
   if not found then
-    insert into public.playlist_tracks (playlist_id, youtube_id, position, track, added_by)
-    values (target_playlist_id, target_youtube_id, target_position, track_payload, auth.uid());
+    insert into public.playlist_tracks (playlist_id, youtube_id, track_id, position, track, added_by)
+    values (target_playlist_id, target_youtube_id, target_youtube_id, target_position, track_payload, auth.uid());
   end if;
 end;
 $$;
@@ -326,7 +341,7 @@ begin
 
   delete from public.playlist_tracks
   where playlist_id = target_playlist_id
-  and youtube_id = target_youtube_id;
+  and (youtube_id = target_youtube_id or track_id = target_youtube_id);
 end;
 $$;
 
@@ -361,7 +376,7 @@ begin
   end if;
 
   delete from public.playlist_tracks pt
-  where pt.youtube_id = target_track_id
+  where (pt.youtube_id = target_track_id or pt.track_id = target_track_id)
   and public.can_access_playlist(pt.playlist_id);
 
   delete from public.saved_tracks st
