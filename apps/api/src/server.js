@@ -12,6 +12,7 @@ const youtubeApiKey = process.env.YOUTUBE_API_KEY || '';
 const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
 const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
 const ytdlpJsRuntime = process.env.YTDLP_JS_RUNTIME || 'deno';
+const ytdlpRemoteComponents = process.env.YTDLP_REMOTE_COMPONENTS || 'ejs:github';
 const ytdlpCookiesFile = process.env.YTDLP_COOKIES_FILE || '';
 const ytdlpCookiesBase64 = process.env.YTDLP_COOKIES_BASE64 || '';
 const ytdlpCookies = process.env.YTDLP_COOKIES || '';
@@ -52,6 +53,7 @@ app.get('/health', async (req, res) => {
     ffmpegAvailable: ffmpegReady,
     cookiesConfigured: cookiesReady,
     jsRuntime: ytdlpJsRuntime,
+    remoteComponents: ytdlpRemoteComponents,
   });
 });
 
@@ -163,7 +165,7 @@ app.post('/api/download/:videoId', async (req, res, next) => {
     await runYtdlp(await withYtdlpEnvironment([
       '--no-playlist',
       '--format',
-      'bestaudio[ext=m4a]/bestaudio',
+      'bestaudio/best',
       '--output',
       output,
       youtubeWatchUrl(videoId),
@@ -316,7 +318,7 @@ async function getAudioStreamUrl(videoId) {
   const { stdout } = await runYtdlp(await withYtdlpEnvironment([
     '--no-playlist',
     '--format',
-    'bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio',
+    'bestaudio/best',
     '--get-url',
     youtubeWatchUrl(videoId),
   ]), 45_000);
@@ -404,6 +406,9 @@ async function withYtdlpEnvironment(args) {
   const finalArgs = ['--no-cache-dir'];
   if (ytdlpJsRuntime) {
     finalArgs.push('--js-runtimes', ytdlpJsRuntime);
+  }
+  if (ytdlpRemoteComponents) {
+    finalArgs.push('--remote-components', ytdlpRemoteComponents);
   }
 
   const cookiesPath = await resolveCookiesFile();

@@ -52,7 +52,7 @@ Sur Render, YouTube peut bloquer l'IP du serveur avec `HTTP Error 429` ou `Sign 
 3. Dans Render > `flowify-api` > `Environment`, ajoute `YTDLP_COOKIES_BASE64`.
 4. Colle la valeur base64, sauvegarde, puis redeploie.
 
-L'API indique ensuite `cookiesConfigured: true` sur `/health`.
+L'API indique ensuite `cookiesConfigured: true` sur `/health`. Elle active aussi `YTDLP_REMOTE_COMPONENTS=ejs:github`, necessaire quand YouTube demande un challenge JavaScript.
 
 ## APK
 

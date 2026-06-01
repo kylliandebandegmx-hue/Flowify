@@ -18,6 +18,8 @@ services:
         value: ffmpeg
       - key: YTDLP_JS_RUNTIME
         value: deno
+      - key: YTDLP_REMOTE_COMPONENTS
+        value: ejs:github
       - key: STATIC_DIR
         value: /app/apps/web/dist
       - key: CORS_ORIGIN
