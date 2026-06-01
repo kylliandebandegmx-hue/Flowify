@@ -13,7 +13,7 @@ declare
   candidate text;
 begin
   loop
-    candidate := upper(substr(encode(gen_random_bytes(3), 'hex'), 1, 6));
+    candidate := upper(substr(md5(random()::text || clock_timestamp()::text), 1, 6));
     exit when not exists (
       select 1
       from public.playlists p
