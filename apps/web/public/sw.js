@@ -11,6 +11,18 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-self.addEventListener('fetch', () => {
-  return;
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+
+  const url = new URL(request.url);
+  const isSameOrigin = url.origin === self.location.origin;
+  const isNavigation = request.mode === 'navigate' || request.destination === 'document';
+  const isAppShell = isSameOrigin && (isNavigation || url.pathname.endsWith('/index.html'));
+
+  if (!isAppShell) return;
+
+  event.respondWith(
+    fetch(new Request(request, { cache: 'no-store' })).catch(() => fetch(request)),
+  );
 });

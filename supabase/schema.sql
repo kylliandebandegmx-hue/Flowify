@@ -44,6 +44,19 @@ create table if not exists public.saved_tracks (
   unique (user_id, youtube_id)
 );
 
+create table if not exists public.cloud_tracks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  storage_key text not null,
+  title text not null,
+  file_name text not null,
+  content_type text,
+  size_bytes bigint,
+  track jsonb not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, storage_key)
+);
+
 create table if not exists public.playlists (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id) on delete cascade,
@@ -105,6 +118,7 @@ alter table public.playlist_tracks
 
 alter table public.profiles enable row level security;
 alter table public.saved_tracks enable row level security;
+alter table public.cloud_tracks enable row level security;
 alter table public.playlists enable row level security;
 alter table public.playlist_members enable row level security;
 alter table public.playlist_tracks enable row level security;
@@ -115,6 +129,9 @@ drop policy if exists "profiles are updatable by owner" on public.profiles;
 drop policy if exists "saved tracks are readable by owner" on public.saved_tracks;
 drop policy if exists "saved tracks are insertable by owner" on public.saved_tracks;
 drop policy if exists "saved tracks are deletable by owner" on public.saved_tracks;
+drop policy if exists "cloud tracks are readable by owner" on public.cloud_tracks;
+drop policy if exists "cloud tracks are insertable by owner" on public.cloud_tracks;
+drop policy if exists "cloud tracks are deletable by owner" on public.cloud_tracks;
 drop policy if exists "playlists are readable by members" on public.playlists;
 drop policy if exists "playlists are insertable by owner" on public.playlists;
 drop policy if exists "playlists are updatable by owner" on public.playlists;
@@ -189,6 +206,18 @@ create policy "saved tracks are deletable by owner"
   on public.saved_tracks for delete
   using (auth.uid() = user_id);
 
+create policy "cloud tracks are readable by owner"
+  on public.cloud_tracks for select
+  using (auth.uid() = user_id);
+
+create policy "cloud tracks are insertable by owner"
+  on public.cloud_tracks for insert
+  with check (auth.uid() = user_id);
+
+create policy "cloud tracks are deletable by owner"
+  on public.cloud_tracks for delete
+  using (auth.uid() = user_id);
+
 create policy "playlists are readable by members"
   on public.playlists for select
   using (auth.uid() = owner_id or public.is_playlist_member(id));
@@ -256,12 +285,21 @@ begin
     raise exception 'playlist inaccessible';
   end if;
 
-  insert into public.playlist_tracks (playlist_id, youtube_id, position, track, added_by)
-  values (target_playlist_id, target_youtube_id, target_position, track_payload, auth.uid())
-  on conflict (playlist_id, youtube_id) do update
-  set track = excluded.track,
-      position = excluded.position,
-      added_by = excluded.added_by;
+  if nullif(target_youtube_id, '') is null then
+    raise exception 'track id missing';
+  end if;
+
+  update public.playlist_tracks
+  set track = track_payload,
+      position = target_position,
+      added_by = auth.uid()
+  where playlist_id = target_playlist_id
+  and youtube_id = target_youtube_id;
+
+  if not found then
+    insert into public.playlist_tracks (playlist_id, youtube_id, position, track, added_by)
+    values (target_playlist_id, target_youtube_id, target_position, track_payload, auth.uid());
+  end if;
 end;
 $$;
 
@@ -433,6 +471,13 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.playlist_tracks;
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.cloud_tracks;
 exception
   when duplicate_object then null;
 end $$;

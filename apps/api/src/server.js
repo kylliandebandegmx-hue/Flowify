@@ -4,7 +4,10 @@ import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -17,6 +20,12 @@ const ytdlpCookiesFile = process.env.YTDLP_COOKIES_FILE || '';
 const ytdlpCookiesBase64 = process.env.YTDLP_COOKIES_BASE64 || '';
 const ytdlpCookies = process.env.YTDLP_COOKIES || '';
 const corsOrigin = process.env.CORS_ORIGIN || true;
+const r2AccountId = process.env.R2_ACCOUNT_ID || '';
+const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
+const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
+const r2Bucket = process.env.R2_BUCKET || '';
+const r2PublicBaseUrl = normalizeBaseUrl(process.env.R2_PUBLIC_BASE_URL || '');
+const cloudUploadLimit = process.env.CLOUD_UPLOAD_LIMIT || '80mb';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const downloadDir = path.resolve(
   process.cwd(),
@@ -31,13 +40,14 @@ const staticDir = path.resolve(
 
 const streamBuilds = new Map();
 const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
+let r2ClientInstance = null;
 
 app.use(express.json({ limit: '1mb' }));
 app.use(
   cors({
     origin: corsOrigin === 'true' ? true : corsOrigin,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Range', 'X-YouTube-Api-Key'],
+    allowedHeaders: ['Content-Type', 'Range', 'X-File-Name', 'X-YouTube-Api-Key'],
     exposedHeaders: ['Content-Length', 'Content-Range', 'Accept-Ranges'],
   }),
 );
@@ -54,6 +64,8 @@ app.get('/health', async (req, res) => {
     cookiesConfigured: cookiesReady,
     jsRuntime: ytdlpJsRuntime,
     remoteComponents: ytdlpRemoteComponents,
+    cloudStorageAvailable: hasR2Config(),
+    cloudPublicBaseUrl: Boolean(r2PublicBaseUrl),
   });
 });
 
@@ -146,6 +158,73 @@ app.get('/api/stream/:videoId', async (req, res, next) => {
     const videoId = ensureVideoId(req.params.videoId);
     const remoteUrl = await getAudioStreamUrl(videoId);
     streamLiveMp3(remoteUrl, req, res, next);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/cloud/upload', express.raw({ type: ['audio/*', 'application/octet-stream'], limit: cloudUploadLimit }), async (req, res, next) => {
+  try {
+    if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+    if (!Buffer.isBuffer(req.body) || !req.body.length) throw httpError(400, 'Fichier audio manquant');
+
+    const contentType = normalizeContentType(req.headers['content-type']);
+    if (!contentType.startsWith('audio/') && contentType !== 'application/octet-stream') {
+      throw httpError(415, 'Seuls les fichiers audio sont acceptes');
+    }
+
+    const originalName = cleanFileName(decodeHeaderValue(String(req.headers['x-file-name'] || 'flowify-track')));
+    const key = `cloud/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${originalName}`;
+
+    await getR2Client().send(new PutObjectCommand({
+      Bucket: r2Bucket,
+      Key: key,
+      Body: req.body,
+      ContentType: contentType,
+      Metadata: {
+        originalName,
+      },
+    }));
+
+    res.json({
+      key,
+      fileName: originalName,
+      contentType,
+      sizeBytes: req.body.length,
+      url: publicR2Url(key),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/cloud/stream', async (req, res, next) => {
+  try {
+    if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+    const key = ensureCloudKey(String(req.query.key || ''));
+    const object = await getR2Client().send(new GetObjectCommand({
+      Bucket: r2Bucket,
+      Key: key,
+      Range: req.headers.range,
+    }));
+
+    res.status(object.ContentRange ? 206 : 200);
+    if (object.ContentType) res.setHeader('Content-Type', object.ContentType);
+    else res.type('audio/mpeg');
+    if (object.ContentLength !== undefined) res.setHeader('Content-Length', String(object.ContentLength));
+    if (object.ContentRange) res.setHeader('Content-Range', object.ContentRange);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+
+    if (!object.Body) {
+      res.end();
+      return;
+    }
+    if (typeof object.Body.pipe === 'function') {
+      object.Body.pipe(res);
+      return;
+    }
+    Readable.fromWeb(object.Body.transformToWebStream()).pipe(res);
   } catch (err) {
     next(err);
   }
@@ -447,6 +526,65 @@ function cookiesFromEnvironment() {
     }
   }
   return ytdlpCookies.trim();
+}
+
+function hasR2Config() {
+  return Boolean(r2AccountId && r2AccessKeyId && r2SecretAccessKey && r2Bucket);
+}
+
+function getR2Client() {
+  if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+  if (!r2ClientInstance) {
+    r2ClientInstance = new S3Client({
+      region: 'auto',
+      endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
+      credentials: {
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+  }
+  return r2ClientInstance;
+}
+
+function publicR2Url(key) {
+  if (!r2PublicBaseUrl) return '';
+  return `${r2PublicBaseUrl}/${key.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function ensureCloudKey(value) {
+  const key = value.trim();
+  if (!key || !key.startsWith('cloud/') || key.includes('..')) {
+    throw httpError(400, 'Cle cloud invalide');
+  }
+  return key;
+}
+
+function normalizeContentType(value) {
+  return String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+}
+
+function normalizeBaseUrl(value) {
+  return value.trim().replace(/\/+$/, '');
+}
+
+function cleanFileName(value) {
+  const cleaned = value
+    .normalize('NFKD')
+    .replace(/[^\w.\- ]+/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^\.+/, '')
+    .slice(0, 96);
+  return cleaned || `flowify-${Date.now()}.mp3`;
+}
+
+function decodeHeaderValue(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function runYtdlp(args, timeoutMs = 60_000) {

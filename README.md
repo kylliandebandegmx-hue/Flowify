@@ -3,6 +3,7 @@
 Flowify est une application musique PWA + APK Android.
 
 Dans l'app, l'utilisateur doit seulement renseigner sa cle YouTube Data API v3 dans `Parametres`. Les tendances et recherches YouTube apparaissent ensuite directement.
+L'onglet `YouTube` garde la lecture via `yt-dlp`. L'onglet `Cloud` permet d'uploader tes propres fichiers audio pour les ecouter dans Flowify et les ajouter a une playlist partagee.
 
 ## Important
 
@@ -11,9 +12,28 @@ Pour que l'audio fonctionne sur le PWA GitHub Pages ou l'APK, `apps/api` doit et
 Tu peux aussi modifier cette URL dans `Parametres` avec le champ `URL API Flowify yt-dlp`, ou dans la variable GitHub `FLOWIFY_API_URL`.
 Le `Dockerfile` a la racine build le PWA et lance l'API Flowify avec `yt-dlp`; si tu deploies cette image, le PWA et l'audio peuvent tourner sur la meme URL.
 
+## Cloud audio
+
+Pour les musiques que tu uploades toi-meme, Flowify utilise Cloudflare R2. R2 est compatible S3, a un free tier de 10 GB-month de stockage par mois, et n'a pas de frais d'egress Internet sur le stockage standard.
+
+1. Cree un bucket R2 dans Cloudflare, par exemple `flowify-music`.
+2. Cree des cles API R2 avec acces lecture/ecriture au bucket.
+3. Dans Render > `flowify-api` > `Environment`, ajoute :
+
+```env
+R2_ACCOUNT_ID=ton_account_id_cloudflare
+R2_ACCESS_KEY_ID=ta_cle_r2
+R2_SECRET_ACCESS_KEY=ton_secret_r2
+R2_BUCKET=flowify-music
+R2_PUBLIC_BASE_URL=
+CLOUD_UPLOAD_LIMIT=80mb
+```
+
+`R2_PUBLIC_BASE_URL` peut rester vide : Flowify passe alors par `/api/cloud/stream`, ce qui evite une configuration CORS R2 en plus.
+
 ## Supabase
 
-Execute `supabase/schema.sql` dans le SQL editor Supabase. Le schema gere les comptes, titres sauvegardes, playlists, membres, codes d'invitation et Realtime.
+Execute `supabase/schema.sql` dans le SQL editor Supabase. Le schema gere les comptes, titres sauvegardes, musiques Cloud, playlists, membres, codes d'invitation et Realtime.
 
 Si ta base existe deja et affiche une erreur `invite_code` ou `joined_at`, execute `supabase/fix-existing-database.sql` dans le SQL editor Supabase.
 

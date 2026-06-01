@@ -7,6 +7,12 @@ export interface Track {
   viewCount: string;
   publishedAt: string;
   description: string;
+  source?: 'youtube' | 'cloud';
+  storageKey?: string;
+  fileName?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  url?: string;
 }
 
 export interface SearchResult {
@@ -20,6 +26,20 @@ export interface ApiHealth {
   youtubeConfigured: boolean;
   ytdlpAvailable: boolean;
   apiReachable?: boolean;
+  cloudStorageAvailable?: boolean;
+  cloudPublicBaseUrl?: boolean;
+}
+
+export interface CloudTrackRow {
+  id: string;
+  user_id: string;
+  storage_key: string;
+  title: string;
+  file_name: string;
+  content_type: string | null;
+  size_bytes: number | null;
+  track: Track;
+  created_at: string;
 }
 
 export interface SavedTrackRow {

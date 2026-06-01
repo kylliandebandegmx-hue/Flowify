@@ -42,6 +42,8 @@ export async function getHealth(): Promise<ApiHealth> {
       youtubeConfigured: Boolean(apiHealth.youtubeConfigured || youtubeConfigured),
       ytdlpAvailable: Boolean(apiHealth.ytdlpAvailable),
       apiReachable: true,
+      cloudStorageAvailable: Boolean(apiHealth.cloudStorageAvailable),
+      cloudPublicBaseUrl: Boolean(apiHealth.cloudPublicBaseUrl),
     };
   }
 
@@ -129,10 +131,45 @@ export async function downloadTrack(_track?: Track): Promise<{ filename: string;
   };
 }
 
+export async function uploadCloudTrack(file: File): Promise<{
+  key: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  url: string;
+}> {
+  await detectApiHealth();
+  if (!flowifyApiBase) {
+    throw new Error('Upload Cloud indisponible: configure URL API Flowify.');
+  }
+  if (!file.type.startsWith('audio/')) {
+    throw new Error('Choisis un fichier audio.');
+  }
+
+  const response = await fetch(apiUrl('/api/cloud/upload'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(file.name),
+    },
+    body: file,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `Erreur upload Cloud ${response.status}`);
+  return payload;
+}
+
 export function streamUrl(track: Track | string): string {
   if (!flowifyApiBase) return '';
   const videoId = typeof track === 'string' ? track : track.id;
   return apiUrl(`/api/stream/${encodeURIComponent(videoId)}?play=${Date.now()}`);
+}
+
+export function cloudStreamUrl(track: Track): string {
+  if (flowifyApiBase && track.storageKey) {
+    return apiUrl(`/api/cloud/stream?key=${encodeURIComponent(track.storageKey)}&play=${Date.now()}`);
+  }
+  return track.url || '';
 }
 
 export function hasYtdlpAudioApi(): boolean {
@@ -287,6 +324,8 @@ async function detectApiHealth(): Promise<ApiHealth | null> {
           ok: Boolean(payload.ok),
           youtubeConfigured: Boolean(payload.youtubeConfigured),
           ytdlpAvailable: Boolean(payload.ytdlpAvailable),
+          cloudStorageAvailable: Boolean(payload.cloudStorageAvailable),
+          cloudPublicBaseUrl: Boolean(payload.cloudPublicBaseUrl),
         };
       }
     } catch {

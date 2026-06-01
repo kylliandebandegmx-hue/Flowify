@@ -24,6 +24,7 @@ import {
   Users,
 } from 'lucide-react';
 import {
+  ChangeEvent,
   FormEvent,
   useCallback,
   useEffect,
@@ -34,6 +35,7 @@ import {
 import {
   clearYoutubeApiKey,
   clearFlowifyApiBaseUrl,
+  cloudStreamUrl,
   downloadTrack,
   getFlowifyApiBaseUrl,
   getHealth,
@@ -45,18 +47,20 @@ import {
   saveYoutubeApiKey,
   searchTracks,
   streamUrl,
+  uploadCloudTrack,
 } from './lib/api';
 import { isStandaloneDisplay } from './lib/pwa';
 import { supabase } from './lib/supabase';
 import type {
   ApiHealth,
+  CloudTrackRow,
   Playlist,
   PlaylistRow,
   SavedTrackRow,
   Track,
 } from './types';
 
-type ViewMode = 'home' | 'search' | 'library' | 'playlists' | 'settings';
+type ViewMode = 'home' | 'search' | 'library' | 'cloud' | 'playlists' | 'settings';
 type AuthMode = 'signin' | 'signup';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -77,6 +81,7 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [tracks, setTracks] = useState<Track[]>([]);
   const [savedTracks, setSavedTracks] = useState<Track[]>([]);
+  const [cloudTracks, setCloudTracks] = useState<Track[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [activePlaylistId, setActivePlaylistId] = useState('');
@@ -101,6 +106,7 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [downloadBusy, setDownloadBusy] = useState<Record<string, boolean>>({});
+  const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [standalone, setStandalone] = useState(false);
@@ -113,6 +119,8 @@ export default function App() {
   const visibleTracks =
     view === 'library'
       ? savedTracks
+      : view === 'cloud'
+        ? cloudTracks
       : view === 'playlists'
         ? activePlaylist?.tracks || []
         : tracks;
@@ -186,6 +194,29 @@ export default function App() {
     setSavedIds(new Set(saved.map((track) => track.id)));
   }, []);
 
+  const loadCloudTracks = useCallback(async (activeUser: User) => {
+    const { data, error } = await supabase
+      .from('cloud_tracks')
+      .select('*')
+      .eq('user_id', activeUser.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setMessage(errorMessage(error));
+      return;
+    }
+
+    const rows = (data || []) as CloudTrackRow[];
+    setCloudTracks(rows.map((row) => ({
+      ...row.track,
+      source: 'cloud',
+      storageKey: row.storage_key,
+      fileName: row.file_name,
+      contentType: row.content_type || row.track.contentType,
+      sizeBytes: row.size_bytes || row.track.sizeBytes,
+    })));
+  }, []);
+
   const loadPlaylists = useCallback(async (_activeUser: User) => {
     const { data, error } = await supabase
       .from('playlists')
@@ -234,9 +265,10 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     loadSavedTracks(user);
+    loadCloudTracks(user);
     loadPlaylists(user);
     loadTrending();
-  }, [loadSavedTracks, loadPlaylists, loadTrending, user]);
+  }, [loadCloudTracks, loadSavedTracks, loadPlaylists, loadTrending, user]);
 
   useEffect(() => {
     if (!user) return undefined;
@@ -285,6 +317,7 @@ export default function App() {
   const signOut = async () => {
     await supabase.auth.signOut();
     setSavedTracks([]);
+    setCloudTracks([]);
     setSavedIds(new Set());
     setPlaylists([]);
     setTracks([]);
@@ -377,6 +410,57 @@ export default function App() {
       setMessage(errorMessage(error));
     } finally {
       setPlaylistBusy(false);
+    }
+  };
+
+  const uploadCloudFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!user || !file) return;
+    if (!file.type.startsWith('audio/')) {
+      setMessage('Choisis un fichier audio.');
+      return;
+    }
+
+    setCloudUploadBusy(true);
+    setMessage('Upload Cloud en cours...');
+    try {
+      const uploaded = await uploadCloudTrack(file);
+      const track: Track = {
+        id: `cloud:${uploaded.key}`,
+        title: titleFromFile(uploaded.fileName || file.name),
+        channel: 'Cloud Flowify',
+        thumbnail: '',
+        duration: '',
+        viewCount: '',
+        publishedAt: new Date().toISOString(),
+        description: 'Musique importee dans Flowify Cloud',
+        source: 'cloud',
+        storageKey: uploaded.key,
+        fileName: uploaded.fileName || file.name,
+        contentType: uploaded.contentType || file.type,
+        sizeBytes: uploaded.sizeBytes || file.size,
+        url: uploaded.url || '',
+      };
+
+      const { error } = await supabase.from('cloud_tracks').insert({
+        user_id: user.id,
+        storage_key: uploaded.key,
+        title: track.title,
+        file_name: track.fileName,
+        content_type: track.contentType,
+        size_bytes: track.sizeBytes,
+        track,
+      });
+      if (error) throw error;
+
+      await loadCloudTracks(user);
+      setView('cloud');
+      setMessage('Musique ajoutee au Cloud.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setCloudUploadBusy(false);
     }
   };
 
@@ -516,6 +600,7 @@ export default function App() {
     setCurrentTime(0);
     setDuration(parseDisplayDuration(track.duration));
 
+    const isCloudTrack = track.source === 'cloud';
     const apiConfigured = hasYtdlpAudioApi();
     if (!apiConfigured) {
       setPlaying(false);
@@ -524,8 +609,13 @@ export default function App() {
     }
 
     if (!audio) return;
-    const source = streamUrl(track);
-    setMessage('Preparation audio yt-dlp...');
+    const source = isCloudTrack ? cloudStreamUrl(track) : streamUrl(track);
+    if (!source) {
+      setPlaying(false);
+      setMessage(isCloudTrack ? 'Fichier Cloud introuvable.' : 'Source yt-dlp introuvable.');
+      return;
+    }
+    setMessage(isCloudTrack ? 'Preparation audio Cloud...' : 'Preparation audio yt-dlp...');
 
     try {
       await probeAudioSource(source);
@@ -637,9 +727,12 @@ export default function App() {
 
   const statusLabel = useMemo(() => {
     if (healthLoading) return 'Verification';
+    if (!hasYoutubeKey && health?.apiReachable && health.cloudStorageAvailable) return 'Cloud pret, cle YouTube manquante';
     if (!hasYoutubeKey) return 'Cle YouTube manquante';
     if (!health?.youtubeConfigured) return 'YouTube non configure';
+    if (health.ytdlpAvailable && health.cloudStorageAvailable) return 'YouTube + Cloud prets';
     if (health.ytdlpAvailable) return 'YouTube + yt-dlp prets';
+    if (health.apiReachable && health.cloudStorageAvailable) return 'Cloud pret, yt-dlp indisponible';
     if (hasFlowifyApi && health.apiReachable) return 'API Flowify OK, yt-dlp indisponible';
     if (hasFlowifyApi) return 'API Flowify non joignable';
     return 'API Flowify manquante';
@@ -647,6 +740,7 @@ export default function App() {
 
   const heading = useMemo(() => {
     if (view === 'library') return 'Titres sauvegardes';
+    if (view === 'cloud') return 'Cloud';
     if (view === 'playlists') return activePlaylist?.name || 'Playlists';
     if (view === 'settings') return 'Parametres';
     if (view === 'search') return 'Recherche';
@@ -670,7 +764,8 @@ export default function App() {
           setPlaying(false);
           const source = event.currentTarget.currentSrc;
           const code = event.currentTarget.error?.code;
-          setMessage(`Lecture yt-dlp impossible${code ? ` (code ${code})` : ''}.`);
+          const sourceLabel = currentTrack?.source === 'cloud' ? 'Cloud' : 'yt-dlp';
+          setMessage(`Lecture ${sourceLabel} impossible${code ? ` (code ${code})` : ''}.`);
           if (source) {
             probeAudioSource(source)
               .catch((error) => setMessage(errorMessage(error)));
@@ -713,6 +808,11 @@ export default function App() {
                 <Heart size={18} />
                 Bibliotheque
                 <span>{savedTracks.length}</span>
+              </button>
+              <button className={view === 'cloud' ? 'active' : ''} onClick={() => setView('cloud')} type="button">
+                <Cloud size={18} />
+                Cloud
+                <span>{cloudTracks.length}</span>
               </button>
               <button className={view === 'playlists' ? 'active' : ''} onClick={() => setView('playlists')} type="button">
                 <ListMusic size={18} />
@@ -827,6 +927,13 @@ export default function App() {
                 <h1>{heading}</h1>
               </div>
               <div className="top-actions">
+                {view === 'cloud' && (
+                  <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
+                    {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
+                    Upload
+                    <input accept="audio/*" disabled={cloudUploadBusy} onChange={uploadCloudFile} type="file" />
+                  </label>
+                )}
                 {view === 'playlists' && activePlaylist && (
                   <button onClick={() => copyInviteCode(activePlaylist)} type="button">
                     <Copy size={18} />
@@ -990,16 +1097,18 @@ export default function App() {
                               <Plus size={17} />
                             </button>
                           )}
-                          <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
-                            {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
-                          </button>
+                          {track.source !== 'cloud' && (
+                            <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
+                              {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
+                            </button>
+                          )}
                         </div>
                       </article>
                     ))
                   ) : (
                     <div className="empty-state">
                       <Search size={28} />
-                      {view === 'playlists' ? 'Playlist vide' : 'Aucun titre'}
+                      {view === 'playlists' ? 'Playlist vide' : view === 'cloud' ? 'Aucune musique Cloud' : 'Aucun titre'}
                     </div>
                   )}
                 </section>
@@ -1086,6 +1195,11 @@ function parseDisplayDuration(value: string) {
   return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
+function titleFromFile(value: string) {
+  const clean = value.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
+  return clean || 'Musique Cloud';
+}
+
 async function probeAudioSource(source: string) {
   try {
     const response = await fetch(source, {
@@ -1132,8 +1246,17 @@ function errorMessage(error: unknown) {
   if (message.includes("Could not find the table 'public.saved_tracks'")) {
     return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
   }
+  if (message.includes("Could not find the table 'public.cloud_tracks'")) {
+    return 'Base Supabase incomplete: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
   if (message.includes("Could not find the table 'public.playlists'")) {
     return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
+  }
+  if (message.includes('Cloud R2 non configure')) {
+    return 'Cloud R2 non configure sur Render: ajoute R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY et R2_BUCKET.';
+  }
+  if (message === 'Failed to fetch' || message.includes('Load failed')) {
+    return 'API Flowify inaccessible depuis le navigateur. Attends le reveil Render puis actualise.';
   }
   if (message.includes('playlist_members_1.joined_at')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
