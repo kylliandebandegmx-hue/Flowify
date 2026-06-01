@@ -46,4 +46,4 @@ La cle YouTube Data API v3 se renseigne directement dans l'app, onglet `Parametr
 
 `yt-dlp` reste dans `apps/api`. En local, lance `npm run dev:api` pour que le web utilise automatiquement `http://localhost:8787`.
 
-Pour le PWA GitHub Pages ou l'APK construit par GitHub, GitHub ne peut pas executer `yt-dlp` en permanence. Si tu deploies `apps/api` sur un hebergeur Node, ajoute son adresse dans la variable GitHub `FLOWIFY_API_URL`; il n'y a rien a saisir dans l'app. Sans ce service, la lecture audio est volontairement bloquee car Flowify utilise uniquement `yt-dlp`.
+Pour le PWA GitHub Pages ou l'APK construit par GitHub, GitHub ne peut pas executer `yt-dlp` en permanence. Il faut deployer `apps/api` sur un hebergeur Node/Docker, puis ajouter son adresse HTTPS dans la variable GitHub `FLOWIFY_API_URL`; il n'y a rien a saisir dans l'app. Sans ce service, la lecture audio est volontairement bloquee car Flowify utilise uniquement `yt-dlp`.

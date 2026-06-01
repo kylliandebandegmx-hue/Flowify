@@ -466,6 +466,18 @@ button:disabled {
   background: var(--panel-2);
 }
 
+.danger-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(244, 122, 163, 0.36);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: rgba(244, 122, 163, 0.14);
+}
+
 .track-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));

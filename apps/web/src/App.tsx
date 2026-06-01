@@ -347,13 +347,14 @@ export default function App() {
 
   const joinPlaylist = async (event: FormEvent) => {
     event.preventDefault();
-    if (!user || !joinCode.trim()) return;
+    const cleanCode = joinCode.trim().replace(/\s+/g, '').toUpperCase();
+    if (!user || !cleanCode) return;
 
     setPlaylistBusy(true);
     setMessage('');
     try {
       const { data, error } = await supabase.rpc('join_playlist_by_code', {
-        code: joinCode.trim(),
+        code: cleanCode,
       });
       if (error) throw error;
       setJoinCode('');
@@ -361,6 +362,7 @@ export default function App() {
       if (data) {
         setActivePlaylistId(String(data));
         setView('playlists');
+        setMessage('Playlist rejointe.');
       }
     } catch (error) {
       setMessage(errorMessage(error));
@@ -397,6 +399,31 @@ export default function App() {
       });
       if (error) throw error;
       setMessage(`Nouveau code: ${String(data)}`);
+      await loadPlaylists(user);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPlaylistBusy(false);
+    }
+  };
+
+  const deletePlaylist = async (playlist: Playlist | null) => {
+    if (!user || !playlist || playlist.ownerId !== user.id) return;
+    const confirmed = window.confirm(`Supprimer la playlist "${playlist.name}" ?`);
+    if (!confirmed) return;
+
+    setPlaylistBusy(true);
+    setMessage('');
+    try {
+      const { error } = await supabase
+        .from('playlists')
+        .delete()
+        .eq('id', playlist.id)
+        .eq('owner_id', user.id);
+
+      if (error) throw error;
+      if (activePlaylistId === playlist.id) setActivePlaylistId('');
+      setMessage(`Playlist supprimee: ${playlist.name}`);
       await loadPlaylists(user);
     } catch (error) {
       setMessage(errorMessage(error));
@@ -478,6 +505,9 @@ export default function App() {
 
     if (!audio) return;
     const source = streamUrl(track);
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.preload = 'metadata';
     audio.src = source;
     audio.load();
     try {
@@ -574,8 +604,8 @@ export default function App() {
     if (!hasYoutubeKey) return 'Cle YouTube manquante';
     if (!health?.youtubeConfigured) return 'YouTube non configure';
     if (health.ytdlpAvailable) return 'YouTube + yt-dlp prets';
-    if (hasYtdlpAudioApi()) return 'YouTube pret, yt-dlp indisponible';
-    return 'YouTube pret';
+    if (hasYtdlpAudioApi()) return 'yt-dlp indisponible';
+    return 'yt-dlp non configure';
   }, [hasYoutubeKey, health, healthLoading]);
 
   const heading = useMemo(() => {
@@ -613,7 +643,7 @@ export default function App() {
 
       <aside className="sidebar">
         <div className="brand">
-          <img src={`${import.meta.env.BASE_URL}flowify-logo.svg`} alt="Flowify" />
+          <img src={`${import.meta.env.BASE_URL}flowify-logo.png`} alt="Flowify" />
         </div>
 
         {user && (
@@ -669,7 +699,7 @@ export default function App() {
               <form className="side-form" onSubmit={joinPlaylist}>
                 <input
                   value={joinCode}
-                  onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+                  onChange={(event) => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
                   placeholder="Code invitation"
                 />
                 <button aria-label="Rejoindre" disabled={playlistBusy || !joinCode.trim()} type="submit">
@@ -724,7 +754,7 @@ export default function App() {
         {!user ? (
           <section className="auth-surface">
             <div className="auth-card">
-              <img src={`${import.meta.env.BASE_URL}flowify-icon.svg`} alt="" />
+              <img src={`${import.meta.env.BASE_URL}flowify-icon.png`} alt="" />
               <h1>Flowify</h1>
               <form onSubmit={submitAuth}>
                 <label>
@@ -822,9 +852,15 @@ export default function App() {
                           {activePlaylist.inviteCode}
                         </button>
                         {activePlaylist.ownerId === user.id && (
-                          <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
-                            Generer un code
-                          </button>
+                          <>
+                            <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
+                              Generer un code
+                            </button>
+                            <button className="danger-action" disabled={playlistBusy} onClick={() => deletePlaylist(activePlaylist)} type="button">
+                              <Trash2 size={16} />
+                              Supprimer
+                            </button>
+                          </>
                         )}
                       </div>
                     </>
@@ -848,9 +884,15 @@ export default function App() {
                           {activePlaylist.inviteCode}
                         </button>
                         {activePlaylist.ownerId === user.id && (
-                          <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
-                            Generer un code
-                          </button>
+                          <>
+                            <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
+                              Generer un code
+                            </button>
+                            <button className="danger-action" disabled={playlistBusy} onClick={() => deletePlaylist(activePlaylist)} type="button">
+                              <Trash2 size={16} />
+                              Supprimer
+                            </button>
+                          </>
                         )}
                       </>
                     ) : (

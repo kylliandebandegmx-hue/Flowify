@@ -265,7 +265,7 @@ begin
   select p.id
   into target_playlist_id
   from public.playlists p
-  where upper(p.invite_code) = upper(trim(code))
+  where upper(p.invite_code) = upper(regexp_replace(trim(code), '\s+', '', 'g'))
   limit 1;
 
   if target_playlist_id is null then
