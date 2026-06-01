@@ -2,7 +2,7 @@
 
 ## PWA
 
-Le PWA est publie par GitHub Pages avec `.github/workflows/pages.yml`.
+Le PWA est publie par GitHub Pages avec `.github/workflows/pages.yml`. Le workflow utilise Node 22.
 
 Ajoute une variable GitHub Actions :
 
@@ -21,16 +21,17 @@ https://ton-pseudo.github.io/nom-du-repo/
 L'API doit tourner sur un service serveur. Elle a besoin de :
 
 ```text
-YOUTUBE_API_KEY
 YTDLP_PATH
 CORS_ORIGIN
 ```
+
+`YOUTUBE_API_KEY` est optionnelle : elle peut etre renseignee dans l'app, onglet `Parametres`.
 
 Avec Docker, l'image installe `yt-dlp` via `pip`.
 
 ## Android APK
 
-Le dossier `android/` est un projet Capacitor.
+Le dossier `android/` est un projet Capacitor. Capacitor 8 demande Node 22 ou plus.
 
 Build local Windows :
 

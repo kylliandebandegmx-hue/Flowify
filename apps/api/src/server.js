@@ -27,15 +27,15 @@ app.use(
   cors({
     origin: corsOrigin === 'true' ? true : corsOrigin,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Range'],
+    allowedHeaders: ['Content-Type', 'Range', 'X-YouTube-Api-Key'],
     exposedHeaders: ['Content-Length', 'Content-Range', 'Accept-Ranges'],
   }),
 );
 
-app.get('/health', async (_req, res) => {
+app.get('/health', async (req, res) => {
   res.json({
     ok: true,
-    youtubeConfigured: Boolean(youtubeApiKey),
+    youtubeConfigured: Boolean(getYoutubeApiKey(req)),
     ytdlpAvailable: await hasYtdlp(),
   });
 });
@@ -48,7 +48,7 @@ app.get('/api/search', async (req, res, next) => {
 
     if (!query) throw httpError(400, 'Missing search query');
 
-    const search = await youtubeFetch('/search', {
+    const search = await youtubeFetch(req, '/search', {
       part: 'snippet',
       q: query,
       type: 'video',
@@ -61,7 +61,7 @@ app.get('/api/search', async (req, res, next) => {
     const ids = search.items
       .map((item) => item?.id?.videoId)
       .filter(Boolean);
-    const details = await getVideoDetails(ids);
+    const details = await getVideoDetails(req, ids);
 
     res.json({
       tracks: search.items
@@ -83,7 +83,7 @@ app.get('/api/trending', async (req, res, next) => {
   try {
     const regionCode = String(req.query.regionCode || 'FR').slice(0, 2);
     const maxResults = clamp(Number(req.query.maxResults || 24), 1, 50);
-    const data = await youtubeFetch('/videos', {
+    const data = await youtubeFetch(req, '/videos', {
       part: 'snippet,contentDetails,statistics',
       chart: 'mostPopular',
       videoCategoryId: '10',
@@ -108,11 +108,11 @@ app.get('/api/resolve', async (req, res, next) => {
 
     const { videoId, playlistId } = parseYouTubeUrl(rawUrl);
     if (playlistId && !videoId) {
-      res.json(await getPlaylistTracks(playlistId));
+      res.json(await getPlaylistTracks(req, playlistId));
       return;
     }
     if (videoId) {
-      const details = await getVideoDetails([videoId]);
+      const details = await getVideoDetails(req, [videoId]);
       const item = details.get(videoId);
       if (!item) throw httpError(404, 'Video not found');
       res.json({ tracks: [trackFromVideo(item)], nextPageToken: '', totalResults: 1 });
@@ -208,13 +208,16 @@ app.listen(port, () => {
   console.log(`Flowify API listening on http://localhost:${port}`);
 });
 
-async function youtubeFetch(endpoint, params) {
-  if (!youtubeApiKey) throw httpError(500, 'YOUTUBE_API_KEY is not configured');
+async function youtubeFetch(req, endpoint, params) {
+  const activeYoutubeApiKey = getYoutubeApiKey(req);
+  if (!activeYoutubeApiKey) {
+    throw httpError(400, 'Cle YouTube Data API v3 manquante');
+  }
   const url = new URL(`https://www.googleapis.com/youtube/v3${endpoint}`);
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== '') url.searchParams.set(key, value);
   }
-  url.searchParams.set('key', youtubeApiKey);
+  url.searchParams.set('key', activeYoutubeApiKey);
 
   const response = await fetch(url);
   const text = await response.text();
@@ -231,18 +234,18 @@ async function youtubeFetch(endpoint, params) {
   return data;
 }
 
-async function getVideoDetails(ids) {
+async function getVideoDetails(req, ids) {
   const cleanIds = [...new Set(ids.filter(Boolean))];
   if (!cleanIds.length) return new Map();
-  const data = await youtubeFetch('/videos', {
+  const data = await youtubeFetch(req, '/videos', {
     part: 'snippet,contentDetails,statistics',
     id: cleanIds.join(','),
   });
   return new Map(data.items.map((item) => [item.id, item]));
 }
 
-async function getPlaylistTracks(playlistId) {
-  const data = await youtubeFetch('/playlistItems', {
+async function getPlaylistTracks(req, playlistId) {
+  const data = await youtubeFetch(req, '/playlistItems', {
     part: 'snippet',
     playlistId,
     maxResults: '50',
@@ -250,7 +253,7 @@ async function getPlaylistTracks(playlistId) {
   const ids = data.items
     .map((item) => item?.snippet?.resourceId?.videoId)
     .filter(Boolean);
-  const details = await getVideoDetails(ids);
+  const details = await getVideoDetails(req, ids);
   return {
     tracks: ids
       .map((id) => details.get(id))
@@ -383,6 +386,10 @@ function decodeText(value) {
 
 function youtubeWatchUrl(videoId) {
   return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+function getYoutubeApiKey(req) {
+  return String(req.get('X-YouTube-Api-Key') || youtubeApiKey).trim();
 }
 
 function ensureVideoId(videoId) {

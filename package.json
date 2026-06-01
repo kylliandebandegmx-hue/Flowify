@@ -19,7 +19,7 @@
     "android:apk:windows": "npm run android:sync && cd android && gradlew.bat assembleDebug"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.4",

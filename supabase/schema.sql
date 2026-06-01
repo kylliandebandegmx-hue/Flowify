@@ -1,5 +1,27 @@
 create extension if not exists pgcrypto;
 
+create or replace function public.generate_playlist_invite_code()
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  candidate text;
+begin
+  loop
+    candidate := upper(substr(encode(gen_random_bytes(3), 'hex'), 1, 6));
+    exit when not exists (
+      select 1
+      from public.playlists p
+      where p.invite_code = candidate
+    );
+  end loop;
+
+  return candidate;
+end;
+$$;
+
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   email text,
@@ -26,7 +48,7 @@ create table if not exists public.playlists (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
-  invite_code text not null unique default upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 8)),
+  invite_code text not null unique default public.generate_playlist_invite_code(),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -52,10 +74,10 @@ create table if not exists public.playlist_tracks (
 
 alter table public.playlists add column if not exists invite_code text;
 update public.playlists
-set invite_code = upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 8))
+set invite_code = public.generate_playlist_invite_code()
 where invite_code is null;
 alter table public.playlists
-  alter column invite_code set default upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 8)),
+  alter column invite_code set default public.generate_playlist_invite_code(),
   alter column invite_code set not null;
 create unique index if not exists playlists_invite_code_idx
   on public.playlists (invite_code);
@@ -83,6 +105,23 @@ alter table public.saved_tracks enable row level security;
 alter table public.playlists enable row level security;
 alter table public.playlist_members enable row level security;
 alter table public.playlist_tracks enable row level security;
+
+drop policy if exists "profiles are readable by owner" on public.profiles;
+drop policy if exists "profiles are insertable by owner" on public.profiles;
+drop policy if exists "profiles are updatable by owner" on public.profiles;
+drop policy if exists "saved tracks are readable by owner" on public.saved_tracks;
+drop policy if exists "saved tracks are insertable by owner" on public.saved_tracks;
+drop policy if exists "saved tracks are deletable by owner" on public.saved_tracks;
+drop policy if exists "playlists are readable by members" on public.playlists;
+drop policy if exists "playlists are insertable by owner" on public.playlists;
+drop policy if exists "playlists are updatable by owner" on public.playlists;
+drop policy if exists "playlists are deletable by owner" on public.playlists;
+drop policy if exists "playlist members are readable by members" on public.playlist_members;
+drop policy if exists "playlist members are insertable by owner" on public.playlist_members;
+drop policy if exists "playlist members are deletable by self or owner" on public.playlist_members;
+drop policy if exists "playlist tracks readable through membership" on public.playlist_tracks;
+drop policy if exists "playlist tracks insertable through membership" on public.playlist_tracks;
+drop policy if exists "playlist tracks deletable through membership" on public.playlist_tracks;
 
 create or replace function public.is_playlist_owner(target_playlist_id uuid)
 returns boolean
@@ -239,6 +278,35 @@ end;
 $$;
 
 grant execute on function public.join_playlist_by_code(text) to authenticated;
+
+create or replace function public.regenerate_playlist_invite_code(target_playlist_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  next_code text;
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_playlist_owner(target_playlist_id) then
+    raise exception 'seul le proprietaire peut generer un nouveau code';
+  end if;
+
+  next_code := public.generate_playlist_invite_code();
+
+  update public.playlists
+  set invite_code = next_code
+  where id = target_playlist_id;
+
+  return next_code;
+end;
+$$;
+
+grant execute on function public.regenerate_playlist_invite_code(uuid) to authenticated;
 
 create or replace function public.touch_updated_at()
 returns trigger

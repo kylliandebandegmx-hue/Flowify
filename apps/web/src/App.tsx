@@ -33,12 +33,16 @@ import {
   useState,
 } from 'react';
 import {
-  apiBaseUrl,
+  clearYoutubeApiKey,
   downloadTrack,
+  getApiBaseUrl,
   getHealth,
   getTrending,
+  getYoutubeApiKey,
   isApiConfigured,
   resolveYouTubeUrl,
+  saveApiBaseUrl,
+  saveYoutubeApiKey,
   searchTracks,
   streamUrl,
 } from './lib/api';
@@ -78,6 +82,9 @@ export default function App() {
   const [activePlaylistId, setActivePlaylistId] = useState('');
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
+  const [settingsApiUrl, setSettingsApiUrl] = useState(() => getApiBaseUrl());
+  const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
+  const [hasYoutubeKey, setHasYoutubeKey] = useState(() => Boolean(getYoutubeApiKey()));
   const [nextPageToken, setNextPageToken] = useState('');
   const [view, setView] = useState<ViewMode>('home');
   const [loading, setLoading] = useState(false);
@@ -130,7 +137,7 @@ export default function App() {
   }, []);
 
   const refreshHealth = useCallback(async () => {
-    if (!isApiConfigured) {
+    if (!isApiConfigured()) {
       setHealth({ ok: false, youtubeConfigured: false, ytdlpAvailable: false });
       return;
     }
@@ -201,8 +208,13 @@ export default function App() {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       tracks: [...(row.playlist_tracks || [])]
-        .sort((a, b) => (a.position || 0) - (b.position || 0))
-        .map((trackRow) => trackRow.track),
+        .sort((a, b) => {
+          const byPosition = (a.position || 0) - (b.position || 0);
+          if (byPosition !== 0) return byPosition;
+          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        })
+        .map((trackRow) => trackRow.track)
+        .filter(Boolean),
     }));
 
     setPlaylists(mapped);
@@ -365,6 +377,44 @@ export default function App() {
     }
   };
 
+  const saveSettings = async (event: FormEvent) => {
+    event.preventDefault();
+    saveApiBaseUrl(settingsApiUrl);
+    saveYoutubeApiKey(settingsYoutubeKey);
+    setSettingsApiUrl(getApiBaseUrl());
+    setSettingsYoutubeKey(getYoutubeApiKey());
+    setHasYoutubeKey(Boolean(getYoutubeApiKey()));
+    setMessage('Parametres sauvegardes.');
+    await refreshHealth();
+    if (user) await loadTrending();
+  };
+
+  const removeYoutubeKey = async () => {
+    clearYoutubeApiKey();
+    setSettingsYoutubeKey('');
+    setHasYoutubeKey(false);
+    setMessage('Cle YouTube supprimee de cet appareil.');
+    await refreshHealth();
+  };
+
+  const regenerateInviteCode = async (playlist: Playlist | null) => {
+    if (!user || !playlist) return;
+    setPlaylistBusy(true);
+    setMessage('');
+    try {
+      const { data, error } = await supabase.rpc('regenerate_playlist_invite_code', {
+        target_playlist_id: playlist.id,
+      });
+      if (error) throw error;
+      setMessage(`Nouveau code: ${String(data)}`);
+      await loadPlaylists(user);
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPlaylistBusy(false);
+    }
+  };
+
   const addTrackToPlaylist = async (track: Track, playlist = playlistTarget) => {
     if (!user || !playlist) {
       setMessage('Cree ou rejoins une playlist avant d ajouter un titre.');
@@ -520,12 +570,12 @@ export default function App() {
 
   const statusLabel = useMemo(() => {
     if (healthLoading) return 'Verification';
-    if (!isApiConfigured) return 'API manquante';
+    if (!settingsApiUrl.trim()) return 'API manquante';
     if (!health?.ok) return 'API hors ligne';
     if (!health.youtubeConfigured) return 'YouTube non configure';
     if (!health.ytdlpAvailable) return 'yt-dlp absent';
     return 'Pret';
-  }, [health, healthLoading]);
+  }, [health, healthLoading, settingsApiUrl]);
 
   const heading = useMemo(() => {
     if (view === 'library') return 'Titres sauvegardes';
@@ -721,11 +771,39 @@ export default function App() {
 
             {view === 'settings' ? (
               <section className="settings-grid">
-                <article className="settings-card">
-                  <h2>API Flowify</h2>
-                  <p>{apiBaseUrl || 'Non configuree'}</p>
+                <form className="settings-card settings-form" onSubmit={saveSettings}>
+                  <h2>Connexion API</h2>
+                  <label>
+                    URL API Flowify
+                    <input
+                      value={settingsApiUrl}
+                      onChange={(event) => setSettingsApiUrl(event.target.value)}
+                      placeholder="https://ton-api-flowify.example.com"
+                      type="url"
+                    />
+                  </label>
+                  <label>
+                    Cle YouTube Data API v3
+                    <input
+                      value={settingsYoutubeKey}
+                      onChange={(event) => setSettingsYoutubeKey(event.target.value)}
+                      placeholder="AIza..."
+                      type="password"
+                    />
+                  </label>
+                  <div className="settings-actions">
+                    <button className="code-pill" type="submit">
+                      <Settings size={16} />
+                      Sauvegarder
+                    </button>
+                    {hasYoutubeKey && (
+                      <button className="muted-action" onClick={removeYoutubeKey} type="button">
+                        Supprimer la cle
+                      </button>
+                    )}
+                  </div>
                   <span>{statusLabel}</span>
-                </article>
+                </form>
                 <article className="settings-card">
                   <h2>Android APK</h2>
                   <p>Le workflow GitHub genere un APK debug a chaque push.</p>
@@ -741,10 +819,17 @@ export default function App() {
                   {activePlaylist ? (
                     <>
                       <p>{activePlaylist.name}</p>
-                      <button className="code-pill" onClick={() => copyInviteCode(activePlaylist)} type="button">
-                        <Copy size={16} />
-                        {activePlaylist.inviteCode}
-                      </button>
+                      <div className="settings-actions">
+                        <button className="code-pill" onClick={() => copyInviteCode(activePlaylist)} type="button">
+                          <Copy size={16} />
+                          {activePlaylist.inviteCode}
+                        </button>
+                        {activePlaylist.ownerId === user.id && (
+                          <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
+                            Generer un code
+                          </button>
+                        )}
+                      </div>
                     </>
                   ) : (
                     <p>Aucune playlist active</p>
@@ -765,6 +850,11 @@ export default function App() {
                           <Copy size={16} />
                           {activePlaylist.inviteCode}
                         </button>
+                        {activePlaylist.ownerId === user.id && (
+                          <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
+                            Generer un code
+                          </button>
+                        )}
                       </>
                     ) : (
                       <span>Cree une playlist ou rejoins-en une avec un code.</span>

@@ -427,6 +427,45 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.settings-form {
+  grid-column: span 2;
+}
+
+.settings-card label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-card input {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: 0;
+  color: var(--text);
+  background: #0b0c11;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.muted-action {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel-2);
+}
+
 .track-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -728,6 +767,10 @@ button:disabled {
 
   .track-grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-form {
+    grid-column: auto;
   }
 
   .player {
