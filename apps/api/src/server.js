@@ -4,13 +4,13 @@ import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
 const youtubeApiKey = process.env.YOUTUBE_API_KEY || '';
 const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
+const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
 const corsOrigin = process.env.CORS_ORIGIN || true;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const downloadDir = path.resolve(
@@ -37,10 +37,13 @@ app.use(
 );
 
 app.get('/health', async (req, res) => {
+  const ytdlpReady = await hasYtdlp();
+  const ffmpegReady = await hasFfmpeg();
   res.json({
     ok: true,
     youtubeConfigured: Boolean(getYoutubeApiKey(req)),
-    ytdlpAvailable: await hasYtdlp(),
+    ytdlpAvailable: ytdlpReady && ffmpegReady,
+    ffmpegAvailable: ffmpegReady,
   });
 });
 
@@ -132,35 +135,7 @@ app.get('/api/stream/:videoId', async (req, res, next) => {
   try {
     const videoId = ensureVideoId(req.params.videoId);
     const remoteUrl = await getAudioStreamUrl(videoId);
-    const headers = {
-      'User-Agent': 'Flowify/0.1',
-    };
-    if (req.headers.range) headers.Range = req.headers.range;
-
-    const upstream = await fetch(remoteUrl, { headers });
-    if (!upstream.ok && upstream.status !== 206) {
-      throw httpError(502, `Audio upstream failed with HTTP ${upstream.status}`);
-    }
-
-    res.status(upstream.status);
-    for (const header of [
-      'accept-ranges',
-      'cache-control',
-      'content-length',
-      'content-range',
-      'content-type',
-      'etag',
-      'last-modified',
-    ]) {
-      const value = upstream.headers.get(header);
-      if (value) res.setHeader(header, value);
-    }
-
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-    Readable.fromWeb(upstream.body).pipe(res);
+    streamCompatibleAudio(remoteUrl, req, res, next);
   } catch (err) {
     next(err);
   }
@@ -291,7 +266,7 @@ async function getAudioStreamUrl(videoId) {
   const { stdout } = await runYtdlp([
     '--no-playlist',
     '--format',
-    'bestaudio[ext=m4a]/bestaudio',
+    'bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio',
     '--get-url',
     youtubeWatchUrl(videoId),
   ], 45_000);
@@ -300,6 +275,63 @@ async function getAudioStreamUrl(videoId) {
   if (!streamUrl) throw httpError(502, 'yt-dlp did not return an audio URL');
   streamCache.set(videoId, { url: streamUrl, expiresAt: Date.now() + cacheTtlMs });
   return streamUrl;
+}
+
+function streamCompatibleAudio(remoteUrl, req, res, next) {
+  res.status(200);
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Accept-Ranges', 'none');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  const ffmpeg = spawn(ffmpegPath, [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-nostdin',
+    '-user_agent',
+    'Flowify/0.1',
+    '-i',
+    remoteUrl,
+    '-vn',
+    '-codec:a',
+    'libmp3lame',
+    '-b:a',
+    '160k',
+    '-f',
+    'mp3',
+    'pipe:1',
+  ], { windowsHide: true });
+
+  let stderr = '';
+  let closedByClient = false;
+
+  req.on('close', () => {
+    closedByClient = true;
+    ffmpeg.kill('SIGTERM');
+  });
+
+  ffmpeg.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  ffmpeg.on('error', (error) => {
+    if (!res.headersSent) next(httpError(500, `ffmpeg failed to start: ${error.message}`));
+    else res.destroy(error);
+  });
+
+  ffmpeg.on('close', (code) => {
+    if (closedByClient) return;
+    if (code !== 0) {
+      const error = httpError(502, `ffmpeg exited with code ${code}: ${stderr}`);
+      if (!res.headersSent) next(error);
+      else res.destroy(error);
+      return;
+    }
+    res.end();
+  });
+
+  ffmpeg.stdout.pipe(res);
 }
 
 function runYtdlp(args, timeoutMs = 60_000) {
@@ -337,6 +369,43 @@ async function hasYtdlp() {
   } catch {
     return false;
   }
+}
+
+async function hasFfmpeg() {
+  try {
+    await runProcess(ffmpegPath, ['-version'], 10_000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runProcess(command, args, timeoutMs = 60_000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(httpError(504, `${command} timed out`));
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(httpError(500, `${command} failed to start: ${error.message}`));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(httpError(502, `${command} exited with code ${code}: ${stderr || stdout}`));
+    });
+  });
 }
 
 async function findDownloadedFile(videoId) {

@@ -14,6 +14,8 @@ services:
         value: 8787
       - key: YTDLP_PATH
         value: yt-dlp
+      - key: FFMPEG_PATH
+        value: ffmpeg
       - key: STATIC_DIR
         value: /app/apps/web/dist
       - key: CORS_ORIGIN
