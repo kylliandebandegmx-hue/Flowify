@@ -516,28 +516,31 @@ export default function App() {
     setCurrentTime(0);
     setDuration(parseDisplayDuration(track.duration));
 
-    let nextHealth = health;
-    if (!nextHealth?.ytdlpAvailable) {
-      try {
-        nextHealth = await getHealth();
-        setHealth(nextHealth);
-        setHasFlowifyApi(hasYtdlpAudioApi());
-        setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
-      } catch {
-        nextHealth = { ok: false, youtubeConfigured: hasYoutubeKey, ytdlpAvailable: false, apiReachable: false };
-        setHealth(nextHealth);
-      }
-    }
-
     const apiConfigured = hasYtdlpAudioApi();
-    if (!apiConfigured || !nextHealth?.ytdlpAvailable) {
+    if (!apiConfigured) {
       setPlaying(false);
-      setMessage(apiConfigured && nextHealth?.apiReachable !== false ? 'API Flowify detectee, mais yt-dlp ne repond pas.' : 'API Flowify non joignable: verifie l URL dans Parametres.');
+      setMessage('API Flowify non joignable: verifie l URL dans Parametres.');
       return;
     }
 
     if (!audio) return;
     const source = streamUrl(track);
+    setMessage('Preparation audio yt-dlp...');
+
+    try {
+      await probeAudioSource(source);
+      setMessage('');
+      getHealth().then((nextHealth) => {
+        setHealth(nextHealth);
+        setHasFlowifyApi(hasYtdlpAudioApi());
+        setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
+      }).catch(() => undefined);
+    } catch (error) {
+      setPlaying(false);
+      setMessage(errorMessage(error));
+      return;
+    }
+
     audio.pause();
     audio.removeAttribute('src');
     audio.preload = 'metadata';
@@ -653,6 +656,7 @@ export default function App() {
   return (
     <div className={user ? 'app-shell' : 'app-shell auth-mode'}>
       <audio
+        crossOrigin="anonymous"
         ref={audioRef}
         onDurationChange={(event) => {
           const nextDuration = event.currentTarget.duration;
@@ -662,9 +666,15 @@ export default function App() {
           setPlaying(false);
           playOffset(1);
         }}
-        onError={() => {
+        onError={(event) => {
           setPlaying(false);
-          setMessage('Lecture yt-dlp impossible pour ce titre.');
+          const source = event.currentTarget.currentSrc;
+          const code = event.currentTarget.error?.code;
+          setMessage(`Lecture yt-dlp impossible${code ? ` (code ${code})` : ''}.`);
+          if (source) {
+            probeAudioSource(source)
+              .catch((error) => setMessage(errorMessage(error)));
+          }
         }}
         onLoadedMetadata={(event) => {
           const nextDuration = event.currentTarget.duration;
@@ -1074,6 +1084,41 @@ function parseDisplayDuration(value: string) {
     .filter((part) => Number.isFinite(part));
   if (!parts.length) return 0;
   return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+async function probeAudioSource(source: string) {
+  try {
+    const response = await fetch(source, {
+      cache: 'no-store',
+      headers: { Range: 'bytes=0-1023' },
+    });
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(readApiError(text) || `API audio Flowify HTTP ${response.status}`);
+    }
+    if (!contentType.toLowerCase().startsWith('audio/')) {
+      const text = await response.text().catch(() => '');
+      throw new Error(readApiError(text) || `Format audio invalide: ${contentType || 'inconnu'}`);
+    }
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error('API Flowify inaccessible depuis le navigateur. Attends le reveil Render puis actualise.');
+    }
+    throw error;
+  }
+}
+
+function readApiError(value: string) {
+  if (!value.trim()) return '';
+  try {
+    const payload = JSON.parse(value) as { error?: unknown; message?: unknown };
+    if (typeof payload.error === 'string') return payload.error;
+    if (typeof payload.message === 'string') return payload.message;
+  } catch {
+    // Non-JSON response body.
+  }
+  return value.slice(0, 220);
 }
 
 function errorMessage(error: unknown) {
