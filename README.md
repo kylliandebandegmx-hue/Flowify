@@ -6,11 +6,13 @@ Dans l'app, l'utilisateur doit seulement renseigner sa cle YouTube Data API v3 d
 
 ## Important
 
-La recherche utilise YouTube Data API v3 directement depuis l'app. La lecture et le telechargement via `yt-dlp` restent dans `apps/api`; si ce service n'est pas disponible sur le PWA public, l'app bascule sur un lecteur YouTube integre au lieu d'afficher une erreur.
+La recherche utilise YouTube Data API v3 directement depuis l'app. La lecture et le telechargement passent uniquement par `yt-dlp` dans `apps/api`.
 
 ## Supabase
 
 Execute `supabase/schema.sql` dans le SQL editor Supabase. Le schema gere les comptes, titres sauvegardes, playlists, membres, codes d'invitation et Realtime.
+
+Si ta base existe deja et affiche une erreur `invite_code` ou `joined_at`, execute `supabase/fix-existing-database.sql` dans le SQL editor Supabase.
 
 ## GitHub
 

@@ -63,7 +63,6 @@ interface BeforeInstallPromptEvent extends Event {
 
 export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const youtubeFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const user = session?.user || null;
 
@@ -91,7 +90,6 @@ export default function App() {
   const [health, setHealth] = useState<ApiHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
-  const [embedVideoId, setEmbedVideoId] = useState('');
   const [queue, setQueue] = useState<Track[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
   const [playing, setPlaying] = useState(false);
@@ -115,20 +113,6 @@ export default function App() {
         : tracks;
 
   const playlistTarget = activePlaylist || playlists[0] || null;
-
-  const youtubePlayerUrl = useMemo(() => {
-    if (!embedVideoId) return '';
-    const params = new URLSearchParams({
-      autoplay: '1',
-      controls: '1',
-      enablejsapi: '1',
-      modestbranding: '1',
-      playsinline: '1',
-      rel: '0',
-      origin: window.location.origin,
-    });
-    return `https://www.youtube-nocookie.com/embed/${embedVideoId}?${params.toString()}`;
-  }, [embedVideoId]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -296,7 +280,6 @@ export default function App() {
     setPlaylists([]);
     setTracks([]);
     setCurrentTrack(null);
-    setEmbedVideoId('');
     setPlaying(false);
   };
 
@@ -476,13 +459,6 @@ export default function App() {
     setView('playlists');
   };
 
-  const sendYoutubeCommand = useCallback((func: 'playVideo' | 'pauseVideo') => {
-    youtubeFrameRef.current?.contentWindow?.postMessage(
-      JSON.stringify({ event: 'command', func, args: [] }),
-      '*',
-    );
-  }, []);
-
   const playTrack = async (track: Track, list = visibleTracks, index = 0) => {
     const audio = audioRef.current;
 
@@ -491,19 +467,16 @@ export default function App() {
     setQueueIndex(index);
     setMessage('');
     setCurrentTime(0);
-    setDuration(0);
+    setDuration(parseDisplayDuration(track.duration));
 
     const ytdlpReady = hasYtdlpAudioApi() && health?.ytdlpAvailable !== false;
     if (!ytdlpReady) {
-      audio?.pause();
-      audio?.removeAttribute('src');
-      setEmbedVideoId(track.id);
-      setPlaying(true);
+      setPlaying(false);
+      setMessage('Lecture uniquement via yt-dlp: le service yt-dlp est indisponible.');
       return;
     }
 
     if (!audio) return;
-    setEmbedVideoId('');
     const source = streamUrl(track);
     audio.src = source;
     audio.load();
@@ -519,16 +492,6 @@ export default function App() {
   const togglePlay = async () => {
     const audio = audioRef.current;
     if (!currentTrack) return;
-    if (embedVideoId) {
-      if (playing) {
-        sendYoutubeCommand('pauseVideo');
-        setPlaying(false);
-      } else {
-        sendYoutubeCommand('playVideo');
-        setPlaying(true);
-      }
-      return;
-    }
     if (!audio) return;
     if (audio.paused) {
       await audio.play();
@@ -627,10 +590,21 @@ export default function App() {
     <div className={user ? 'app-shell' : 'app-shell auth-mode'}>
       <audio
         ref={audioRef}
-        onDurationChange={(event) => setDuration(event.currentTarget.duration || 0)}
+        onDurationChange={(event) => {
+          const nextDuration = event.currentTarget.duration;
+          if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
+        }}
         onEnded={() => {
           setPlaying(false);
           playOffset(1);
+        }}
+        onError={() => {
+          setPlaying(false);
+          setMessage('Lecture yt-dlp impossible pour ce titre.');
+        }}
+        onLoadedMetadata={(event) => {
+          const nextDuration = event.currentTarget.duration;
+          if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
         onPause={() => setPlaying(false)}
         onPlay={() => setPlaying(true)}
@@ -945,16 +919,7 @@ export default function App() {
       {user && (
         <footer className="player">
           <div className="now-playing">
-            {youtubePlayerUrl ? (
-              <iframe
-                ref={youtubeFrameRef}
-                className="youtube-frame"
-                title={currentTrack?.title || 'Lecteur YouTube'}
-                src={youtubePlayerUrl}
-                allow="autoplay; encrypted-media; picture-in-picture"
-                allowFullScreen
-              />
-            ) : currentTrack?.thumbnail ? (
+            {currentTrack?.thumbnail ? (
               <img src={currentTrack.thumbnail} alt="" />
             ) : (
               <div className="empty-cover" />
@@ -985,10 +950,14 @@ export default function App() {
               max={duration || 0}
               step="1"
               value={Math.min(currentTime, duration || 0)}
-              disabled={!duration || Boolean(embedVideoId)}
+              disabled={!duration}
               onChange={(event) => {
                 const nextTime = Number(event.target.value);
-                if (audioRef.current) audioRef.current.currentTime = nextTime;
+                try {
+                  if (audioRef.current) audioRef.current.currentTime = nextTime;
+                } catch {
+                  setMessage('Deplacement indisponible pendant le chargement yt-dlp.');
+                }
                 setCurrentTime(nextTime);
               }}
               type="range"
@@ -1008,7 +977,25 @@ function formatTime(value: number) {
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
+function parseDisplayDuration(value: string) {
+  const parts = value
+    .split(':')
+    .map((part) => Number(part))
+    .filter((part) => Number.isFinite(part));
+  if (!parts.length) return 0;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
 function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('playlists.invite_code')) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes("Could not find the 'invite_code' column")) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes('playlist_members_1.joined_at')) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  return message;
 }

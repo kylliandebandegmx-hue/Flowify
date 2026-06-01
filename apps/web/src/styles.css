@@ -675,26 +675,18 @@ button:disabled {
 
 .now-playing {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-columns: 56px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   min-width: 0;
 }
 
 .now-playing img,
-.empty-cover,
-.youtube-frame {
+.empty-cover {
   width: 56px;
   height: 56px;
   border-radius: var(--radius);
   object-fit: cover;
-}
-
-.youtube-frame {
-  width: 96px;
-  height: 54px;
-  border: 0;
-  background: #000;
 }
 
 .empty-cover {
@@ -814,17 +806,12 @@ button:disabled {
   }
 
   .now-playing {
-    grid-template-columns: 76px minmax(0, 1fr);
+    grid-template-columns: 48px minmax(0, 1fr);
   }
 
   .now-playing img,
   .empty-cover {
     width: 48px;
     height: 48px;
-  }
-
-  .youtube-frame {
-    width: 76px;
-    height: 43px;
   }
 }
