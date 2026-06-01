@@ -1141,6 +1141,15 @@ function errorMessage(error: unknown) {
   if (message.includes('row-level security policy') && message.includes('playlist_tracks')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }
+  if (message.includes('The provided YouTube account cookies are no longer valid')) {
+    return 'Cookies YouTube invalides sur Render: reexporte un cookies.txt recent, remplace YTDLP_COOKIES_BASE64, puis redeploie.';
+  }
+  if (message.includes("Sign in to confirm you're not a bot") || message.includes('HTTP Error 429')) {
+    return 'YouTube bloque Render: ajoute ou renouvelle les cookies YouTube dans YTDLP_COOKIES_BASE64.';
+  }
+  if (message.includes('Requested format is not available')) {
+    return 'Format audio YouTube bloque par yt-dlp: verifie les cookies YouTube Render puis redeploie.';
+  }
   if (message.includes('Could not find the function public.add_track_to_playlist')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }
