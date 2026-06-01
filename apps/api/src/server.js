@@ -134,11 +134,8 @@ app.get('/api/resolve', async (req, res, next) => {
 app.get('/api/stream/:videoId', async (req, res, next) => {
   try {
     const videoId = ensureVideoId(req.params.videoId);
-    const audioPath = await ensurePlayableAudioFile(videoId);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.type('audio/mpeg');
-    res.sendFile(audioPath);
+    const remoteUrl = await getAudioStreamUrl(videoId);
+    streamLiveMp3(remoteUrl, req, res, next);
   } catch (err) {
     next(err);
   }
@@ -319,6 +316,70 @@ async function getAudioStreamUrl(videoId) {
   const streamUrl = stdout.split(/\r?\n/).find((line) => line.startsWith('http'));
   if (!streamUrl) throw httpError(502, 'yt-dlp did not return an audio URL');
   return streamUrl;
+}
+
+function streamLiveMp3(remoteUrl, req, res, next) {
+  res.status(200);
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Accept-Ranges', 'none');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.flushHeaders?.();
+
+  const ffmpeg = spawn(ffmpegPath, [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-nostdin',
+    '-reconnect',
+    '1',
+    '-reconnect_streamed',
+    '1',
+    '-reconnect_delay_max',
+    '5',
+    '-user_agent',
+    'Flowify/0.1',
+    '-i',
+    remoteUrl,
+    '-vn',
+    '-codec:a',
+    'libmp3lame',
+    '-b:a',
+    '160k',
+    '-f',
+    'mp3',
+    'pipe:1',
+  ], { windowsHide: true });
+
+  let stderr = '';
+  let closedByClient = false;
+
+  req.on('close', () => {
+    closedByClient = true;
+    ffmpeg.kill('SIGTERM');
+  });
+
+  ffmpeg.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  ffmpeg.on('error', (error) => {
+    if (!res.headersSent) next(httpError(500, `ffmpeg failed to start: ${error.message}`));
+    else res.destroy(error);
+  });
+
+  ffmpeg.on('close', (code) => {
+    if (closedByClient) return;
+    if (code !== 0) {
+      const error = httpError(502, `ffmpeg exited with code ${code}: ${stderr}`);
+      if (!res.headersSent) next(error);
+      else res.destroy(error);
+      return;
+    }
+    res.end();
+  });
+
+  ffmpeg.stdout.pipe(res);
 }
 
 async function findStreamFile(videoId) {
