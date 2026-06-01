@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -244,6 +244,20 @@ app.get('/api/cloud/stream', async (req, res, next) => {
       return;
     }
     Readable.fromWeb(object.Body.transformToWebStream()).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/cloud/delete', async (req, res, next) => {
+  try {
+    if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+    const key = ensureCloudKey(String(req.body?.key || ''));
+    await getR2Client().send(new DeleteObjectCommand({
+      Bucket: r2Bucket,
+      Key: key,
+    }));
+    res.json({ ok: true, key });
   } catch (err) {
     next(err);
   }

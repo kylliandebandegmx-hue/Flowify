@@ -159,6 +159,21 @@ export async function uploadCloudTrack(file: File): Promise<{
   return payload;
 }
 
+export async function deleteCloudTrackObject(storageKey: string): Promise<void> {
+  await detectApiHealth();
+  if (!flowifyApiBase) {
+    throw new Error('Suppression Cloud indisponible: configure URL API Flowify.');
+  }
+
+  const response = await fetch(apiUrl('/api/cloud/delete'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: storageKey }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `Erreur suppression Cloud ${response.status}`);
+}
+
 export function streamUrl(track: Track | string): string {
   if (!flowifyApiBase) return '';
   const videoId = typeof track === 'string' ? track : track.id;

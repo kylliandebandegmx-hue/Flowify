@@ -187,6 +187,7 @@ create policy "playlist tracks deletable through membership"
 
 drop function if exists public.add_track_to_playlist(uuid, text, integer, jsonb);
 drop function if exists public.remove_track_from_playlist(uuid, text);
+drop function if exists public.delete_cloud_track(text);
 drop function if exists public.delete_playlist(uuid);
 drop function if exists public.join_playlist_by_code(text);
 drop function if exists public.regenerate_playlist_invite_code(uuid);
@@ -256,6 +257,50 @@ end;
 $$;
 
 grant execute on function public.remove_track_from_playlist(uuid, text) to authenticated;
+
+create or replace function public.delete_cloud_track(target_storage_key text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_track_id text;
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if nullif(trim(target_storage_key), '') is null then
+    raise exception 'storage key missing';
+  end if;
+
+  target_track_id := 'cloud:' || target_storage_key;
+
+  if not exists (
+    select 1
+    from public.cloud_tracks ct
+    where ct.user_id = auth.uid()
+    and ct.storage_key = target_storage_key
+  ) then
+    raise exception 'musique cloud inaccessible';
+  end if;
+
+  delete from public.playlist_tracks pt
+  where pt.youtube_id = target_track_id
+  and public.can_access_playlist(pt.playlist_id);
+
+  delete from public.saved_tracks st
+  where st.user_id = auth.uid()
+  and st.youtube_id = target_track_id;
+
+  delete from public.cloud_tracks ct
+  where ct.user_id = auth.uid()
+  and ct.storage_key = target_storage_key;
+end;
+$$;
+
+grant execute on function public.delete_cloud_track(text) to authenticated;
 
 create or replace function public.delete_playlist(target_playlist_id uuid)
 returns void

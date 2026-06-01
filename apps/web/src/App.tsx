@@ -36,6 +36,7 @@ import {
   clearYoutubeApiKey,
   clearFlowifyApiBaseUrl,
   cloudStreamUrl,
+  deleteCloudTrackObject,
   downloadTrack,
   getFlowifyApiBaseUrl,
   getHealth,
@@ -106,6 +107,7 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [downloadBusy, setDownloadBusy] = useState<Record<string, boolean>>({});
+  const [cloudDeleteBusy, setCloudDeleteBusy] = useState<Record<string, boolean>>({});
   const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -577,6 +579,46 @@ export default function App() {
       return;
     }
     await loadPlaylists(user);
+  };
+
+  const deleteCloudTrack = async (track: Track) => {
+    if (!user || track.source !== 'cloud' || !track.storageKey) return;
+    const confirmed = window.confirm(`Supprimer "${track.title}" du Cloud ?`);
+    if (!confirmed) return;
+
+    setCloudDeleteBusy((previous) => ({ ...previous, [track.id]: true }));
+    setMessage('');
+    try {
+      const { error } = await supabase.rpc('delete_cloud_track', {
+        target_storage_key: track.storageKey,
+      });
+      if (error) throw error;
+
+      await deleteCloudTrackObject(track.storageKey);
+      setCloudTracks((previous) => previous.filter((item) => item.id !== track.id));
+      setSavedTracks((previous) => previous.filter((item) => item.id !== track.id));
+      setSavedIds((previous) => {
+        const copy = new Set(previous);
+        copy.delete(track.id);
+        return copy;
+      });
+      if (currentTrack?.id === track.id) {
+        audioRef.current?.pause();
+        audioRef.current?.removeAttribute('src');
+        setCurrentTrack(null);
+        setPlaying(false);
+        setCurrentTime(0);
+        setDuration(0);
+      }
+      await loadCloudTracks(user);
+      await loadSavedTracks(user);
+      await loadPlaylists(user);
+      setMessage('Musique Cloud supprimee.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setCloudDeleteBusy((previous) => ({ ...previous, [track.id]: false }));
+    }
   };
 
   const copyInviteCode = async (playlist: Playlist | null) => {
@@ -1097,6 +1139,11 @@ export default function App() {
                               <Plus size={17} />
                             </button>
                           )}
+                          {view === 'cloud' && track.source === 'cloud' && (
+                            <button aria-label="Supprimer du Cloud" disabled={cloudDeleteBusy[track.id]} onClick={() => deleteCloudTrack(track)} type="button">
+                              {cloudDeleteBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Trash2 size={17} />}
+                            </button>
+                          )}
                           {track.source !== 'cloud' && (
                             <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
                               {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
@@ -1278,6 +1325,12 @@ function errorMessage(error: unknown) {
   }
   if (message.includes('Could not find the function public.add_track_to_playlist')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes('Could not find the function public.delete_cloud_track')) {
+    return 'Base Supabase pas a jour: execute le bloc SQL final pour les musiques Cloud.';
+  }
+  if (message.includes('no unique or exclusion constraint matching the ON CONFLICT specification')) {
+    return 'Base Supabase pas a jour: execute le bloc SQL final pour corriger add_track_to_playlist.';
   }
   if (message.includes('Could not find the function public.delete_playlist')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
