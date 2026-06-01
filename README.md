@@ -22,6 +22,7 @@ Pour les musiques que tu uploades toi-meme, Flowify utilise Cloudflare R2. R2 es
 
 ```env
 R2_ACCOUNT_ID=ton_account_id_cloudflare
+R2_ENDPOINT=https://ton_account_id_cloudflare.r2.cloudflarestorage.com
 R2_ACCESS_KEY_ID=ta_cle_r2
 R2_SECRET_ACCESS_KEY=ton_secret_r2
 R2_BUCKET=flowify-music

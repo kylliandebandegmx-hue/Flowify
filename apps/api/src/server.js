@@ -23,7 +23,8 @@ const corsOrigin = process.env.CORS_ORIGIN || true;
 const r2AccountId = process.env.R2_ACCOUNT_ID || '';
 const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
-const r2Bucket = process.env.R2_BUCKET || '';
+const r2Bucket = (process.env.R2_BUCKET || '').trim();
+const r2Endpoint = normalizeBaseUrl(process.env.R2_ENDPOINT || '');
 const r2PublicBaseUrl = normalizeBaseUrl(process.env.R2_PUBLIC_BASE_URL || '');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const downloadDir = path.resolve(
@@ -64,6 +65,7 @@ app.get('/health', async (req, res) => {
     jsRuntime: ytdlpJsRuntime,
     remoteComponents: ytdlpRemoteComponents,
     cloudStorageAvailable: hasR2Config(),
+    cloudEndpointConfigured: Boolean(getR2Endpoint()),
     cloudPublicBaseUrl: Boolean(r2PublicBaseUrl),
   });
 });
@@ -551,7 +553,7 @@ function getR2Client() {
   if (!r2ClientInstance) {
     r2ClientInstance = new S3Client({
       region: 'auto',
-      endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
+      endpoint: getR2Endpoint(),
       credentials: {
         accessKeyId: r2AccessKeyId,
         secretAccessKey: r2SecretAccessKey,
@@ -559,6 +561,12 @@ function getR2Client() {
     });
   }
   return r2ClientInstance;
+}
+
+function getR2Endpoint() {
+  if (r2Endpoint) return r2Endpoint;
+  if (!r2AccountId) return '';
+  return `https://${r2AccountId}.r2.cloudflarestorage.com`;
 }
 
 function publicR2Url(key) {
