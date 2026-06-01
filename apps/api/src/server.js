@@ -11,6 +11,10 @@ const port = Number(process.env.PORT || 8787);
 const youtubeApiKey = process.env.YOUTUBE_API_KEY || '';
 const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
 const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+const ytdlpJsRuntime = process.env.YTDLP_JS_RUNTIME || 'deno';
+const ytdlpCookiesFile = process.env.YTDLP_COOKIES_FILE || '';
+const ytdlpCookiesBase64 = process.env.YTDLP_COOKIES_BASE64 || '';
+const ytdlpCookies = process.env.YTDLP_COOKIES || '';
 const corsOrigin = process.env.CORS_ORIGIN || true;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const downloadDir = path.resolve(
@@ -18,6 +22,7 @@ const downloadDir = path.resolve(
   process.env.DOWNLOAD_DIR || path.join(__dirname, '..', '.flowify-downloads'),
 );
 const streamDir = path.join(downloadDir, 'streams');
+const runtimeDir = path.join(downloadDir, 'runtime');
 const staticDir = path.resolve(
   process.cwd(),
   process.env.STATIC_DIR || path.join(__dirname, '..', '..', 'web', 'dist'),
@@ -39,11 +44,14 @@ app.use(
 app.get('/health', async (req, res) => {
   const ytdlpReady = await hasYtdlp();
   const ffmpegReady = await hasFfmpeg();
+  const cookiesReady = Boolean(await resolveCookiesFile());
   res.json({
     ok: true,
     youtubeConfigured: Boolean(getYoutubeApiKey(req)),
     ytdlpAvailable: ytdlpReady && ffmpegReady,
     ffmpegAvailable: ffmpegReady,
+    cookiesConfigured: cookiesReady,
+    jsRuntime: ytdlpJsRuntime,
   });
 });
 
@@ -152,14 +160,14 @@ app.post('/api/download/:videoId', async (req, res, next) => {
     }
 
     const output = path.join(downloadDir, `${videoId}.%(ext)s`);
-    await runYtdlp([
+    await runYtdlp(await withYtdlpEnvironment([
       '--no-playlist',
       '--format',
       'bestaudio[ext=m4a]/bestaudio',
       '--output',
       output,
       youtubeWatchUrl(videoId),
-    ], 10 * 60 * 1000);
+    ]), 10 * 60 * 1000);
 
     const filename = await findDownloadedFile(videoId);
     if (!filename) throw httpError(500, 'Download finished but no file was produced');
@@ -305,13 +313,13 @@ async function buildPlayableAudioFile(videoId) {
 }
 
 async function getAudioStreamUrl(videoId) {
-  const { stdout } = await runYtdlp([
+  const { stdout } = await runYtdlp(await withYtdlpEnvironment([
     '--no-playlist',
     '--format',
     'bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio',
     '--get-url',
     youtubeWatchUrl(videoId),
-  ], 45_000);
+  ]), 45_000);
 
   const streamUrl = stdout.split(/\r?\n/).find((line) => line.startsWith('http'));
   if (!streamUrl) throw httpError(502, 'yt-dlp did not return an audio URL');
@@ -390,6 +398,50 @@ async function findStreamFile(videoId) {
   } catch {
     return '';
   }
+}
+
+async function withYtdlpEnvironment(args) {
+  const finalArgs = ['--no-cache-dir'];
+  if (ytdlpJsRuntime) {
+    finalArgs.push('--js-runtimes', ytdlpJsRuntime);
+  }
+
+  const cookiesPath = await resolveCookiesFile();
+  if (cookiesPath) {
+    finalArgs.push('--cookies', cookiesPath);
+  }
+
+  return [...finalArgs, ...args];
+}
+
+async function resolveCookiesFile() {
+  if (ytdlpCookiesFile) {
+    try {
+      await fs.access(ytdlpCookiesFile);
+      return ytdlpCookiesFile;
+    } catch {
+      return '';
+    }
+  }
+
+  const cookiesContent = cookiesFromEnvironment();
+  if (!cookiesContent) return '';
+
+  await fs.mkdir(runtimeDir, { recursive: true });
+  const cookiesPath = path.join(runtimeDir, 'youtube-cookies.txt');
+  await fs.writeFile(cookiesPath, cookiesContent, { mode: 0o600 });
+  return cookiesPath;
+}
+
+function cookiesFromEnvironment() {
+  if (ytdlpCookiesBase64) {
+    try {
+      return Buffer.from(ytdlpCookiesBase64, 'base64').toString('utf8').trim();
+    } catch {
+      return '';
+    }
+  }
+  return ytdlpCookies.trim();
 }
 
 function runYtdlp(args, timeoutMs = 60_000) {

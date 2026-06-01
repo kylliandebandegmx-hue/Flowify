@@ -38,6 +38,22 @@ Cette URL est creee quand tu deploies le serveur Docker Flowify. Le fichier `ren
 
 Tu peux aussi mettre cette meme URL dans la variable GitHub `FLOWIFY_API_URL` pour que le PWA GitHub Pages et l'APK soient preconfigures au build.
 
+## Cookies YouTube pour yt-dlp
+
+Sur Render, YouTube peut bloquer l'IP du serveur avec `HTTP Error 429` ou `Sign in to confirm you're not a bot`. Dans ce cas, ajoute des cookies YouTube a Render :
+
+1. Depuis Chrome sur ton PC, exporte les cookies YouTube au format `cookies.txt` Netscape avec une extension d'export de cookies.
+2. Convertis le fichier en base64 avec PowerShell :
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\chemin\youtube-cookies.txt")) | Set-Clipboard
+```
+
+3. Dans Render > `flowify-api` > `Environment`, ajoute `YTDLP_COOKIES_BASE64`.
+4. Colle la valeur base64, sauvegarde, puis redeploie.
+
+L'API indique ensuite `cookiesConfigured: true` sur `/health`.
+
 ## APK
 
 Build local Windows :

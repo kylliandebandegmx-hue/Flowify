@@ -16,6 +16,8 @@ services:
         value: yt-dlp
       - key: FFMPEG_PATH
         value: ffmpeg
+      - key: YTDLP_JS_RUNTIME
+        value: deno
       - key: STATIC_DIR
         value: /app/apps/web/dist
       - key: CORS_ORIGIN
