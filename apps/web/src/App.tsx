@@ -37,6 +37,7 @@ import {
   getHealth,
   getTrending,
   getYoutubeApiKey,
+  hasYtdlpAudioApi,
   resolveYouTubeUrl,
   saveYoutubeApiKey,
   searchTracks,
@@ -62,6 +63,7 @@ interface BeforeInstallPromptEvent extends Event {
 
 export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const youtubeFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const user = session?.user || null;
 
@@ -89,6 +91,7 @@ export default function App() {
   const [health, setHealth] = useState<ApiHealth | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
+  const [embedVideoId, setEmbedVideoId] = useState('');
   const [queue, setQueue] = useState<Track[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
   const [playing, setPlaying] = useState(false);
@@ -112,6 +115,20 @@ export default function App() {
         : tracks;
 
   const playlistTarget = activePlaylist || playlists[0] || null;
+
+  const youtubePlayerUrl = useMemo(() => {
+    if (!embedVideoId) return '';
+    const params = new URLSearchParams({
+      autoplay: '1',
+      controls: '1',
+      enablejsapi: '1',
+      modestbranding: '1',
+      playsinline: '1',
+      rel: '0',
+      origin: window.location.origin,
+    });
+    return `https://www.youtube-nocookie.com/embed/${embedVideoId}?${params.toString()}`;
+  }, [embedVideoId]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -180,7 +197,7 @@ export default function App() {
     const { data, error } = await supabase
       .from('playlists')
       .select(
-        'id, owner_id, name, invite_code, created_at, updated_at, playlist_tracks(id, playlist_id, track, created_at), playlist_members(playlist_id, user_id, role, joined_at)',
+        'id, owner_id, name, invite_code, created_at, updated_at, playlist_tracks(id, playlist_id, track, created_at), playlist_members(playlist_id, user_id, role)',
       )
       .order('updated_at', { ascending: false });
 
@@ -279,6 +296,7 @@ export default function App() {
     setPlaylists([]);
     setTracks([]);
     setCurrentTrack(null);
+    setEmbedVideoId('');
     setPlaying(false);
   };
 
@@ -458,22 +476,35 @@ export default function App() {
     setView('playlists');
   };
 
+  const sendYoutubeCommand = useCallback((func: 'playVideo' | 'pauseVideo') => {
+    youtubeFrameRef.current?.contentWindow?.postMessage(
+      JSON.stringify({ event: 'command', func, args: [] }),
+      '*',
+    );
+  }, []);
+
   const playTrack = async (track: Track, list = visibleTracks, index = 0) => {
     const audio = audioRef.current;
-    if (!audio) return;
 
     setCurrentTrack(track);
     setQueue(list);
     setQueueIndex(index);
     setMessage('');
+    setCurrentTime(0);
+    setDuration(0);
 
-    const source = streamUrl();
-    if (!source) {
-      setPlaying(false);
-      setMessage('Les titres apparaissent avec la cle YouTube. La lecture audio directe n est pas active dans cette version.');
+    const ytdlpReady = hasYtdlpAudioApi() && health?.ytdlpAvailable !== false;
+    if (!ytdlpReady) {
+      audio?.pause();
+      audio?.removeAttribute('src');
+      setEmbedVideoId(track.id);
+      setPlaying(true);
       return;
     }
 
+    if (!audio) return;
+    setEmbedVideoId('');
+    const source = streamUrl(track);
     audio.src = source;
     audio.load();
     try {
@@ -487,7 +518,18 @@ export default function App() {
 
   const togglePlay = async () => {
     const audio = audioRef.current;
-    if (!audio || !currentTrack) return;
+    if (!currentTrack) return;
+    if (embedVideoId) {
+      if (playing) {
+        sendYoutubeCommand('pauseVideo');
+        setPlaying(false);
+      } else {
+        sendYoutubeCommand('playVideo');
+        setPlaying(true);
+      }
+      return;
+    }
+    if (!audio) return;
     if (audio.paused) {
       await audio.play();
       setPlaying(true);
@@ -548,7 +590,7 @@ export default function App() {
     setMessage('');
     try {
       await downloadTrack(track);
-      setMessage('Titre telecharge cote API');
+      setMessage('Titre telecharge via yt-dlp');
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -568,6 +610,8 @@ export default function App() {
     if (healthLoading) return 'Verification';
     if (!hasYoutubeKey) return 'Cle YouTube manquante';
     if (!health?.youtubeConfigured) return 'YouTube non configure';
+    if (health.ytdlpAvailable) return 'YouTube + yt-dlp prets';
+    if (hasYtdlpAudioApi()) return 'YouTube pret, yt-dlp indisponible';
     return 'YouTube pret';
   }, [hasYoutubeKey, health, healthLoading]);
 
@@ -872,7 +916,7 @@ export default function App() {
                               <Plus size={17} />
                             </button>
                           )}
-                          <button aria-label="Telecharger cote API" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
+                          <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
                             {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
                           </button>
                         </div>
@@ -901,7 +945,20 @@ export default function App() {
       {user && (
         <footer className="player">
           <div className="now-playing">
-            {currentTrack?.thumbnail ? <img src={currentTrack.thumbnail} alt="" /> : <div className="empty-cover" />}
+            {youtubePlayerUrl ? (
+              <iframe
+                ref={youtubeFrameRef}
+                className="youtube-frame"
+                title={currentTrack?.title || 'Lecteur YouTube'}
+                src={youtubePlayerUrl}
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+              />
+            ) : currentTrack?.thumbnail ? (
+              <img src={currentTrack.thumbnail} alt="" />
+            ) : (
+              <div className="empty-cover" />
+            )}
             <div>
               <strong>{currentTrack?.title || 'Aucun titre'}</strong>
               <span>{currentTrack?.channel || 'Flowify'}</span>
@@ -928,6 +985,7 @@ export default function App() {
               max={duration || 0}
               step="1"
               value={Math.min(currentTime, duration || 0)}
+              disabled={!duration || Boolean(embedVideoId)}
               onChange={(event) => {
                 const nextTime = Number(event.target.value);
                 if (audioRef.current) audioRef.current.currentTime = nextTime;

@@ -61,6 +61,9 @@ create table if not exists public.playlist_members (
   primary key (playlist_id, user_id)
 );
 
+alter table public.playlist_members
+  add column if not exists joined_at timestamptz not null default now();
+
 create table if not exists public.playlist_tracks (
   id uuid primary key default gen_random_uuid(),
   playlist_id uuid not null references public.playlists(id) on delete cascade,

@@ -39,9 +39,13 @@ jobs:
           VITE_BASE_PATH: /
           VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL || 'https://gjphlxpdgwbwfdgayhis.supabase.co' }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_X850AIpTtbPs0VHDmkNAmg_7PLHRaHa' }}
+          VITE_FLOWIFY_API_URL: ${{ vars.FLOWIFY_API_URL || '' }}
 
       - name: Sync Capacitor
         run: npx cap sync android
+
+      - name: Allow Gradle wrapper execution
+        run: chmod +x android/gradlew
 
       - name: Build debug APK
         run: ./gradlew assembleDebug

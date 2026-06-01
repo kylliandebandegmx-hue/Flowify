@@ -39,3 +39,9 @@ Execute `supabase/schema.sql`, puis verifie :
 ## Cle YouTube
 
 La cle YouTube Data API v3 se renseigne directement dans l'app, onglet `Parametres`.
+
+## yt-dlp
+
+`yt-dlp` reste dans `apps/api`. En local, lance `npm run dev:api` pour que le web utilise automatiquement `http://localhost:8787`.
+
+Pour le PWA GitHub Pages ou l'APK construit par GitHub, GitHub ne peut pas executer `yt-dlp` en permanence. Si tu deploies `apps/api` sur un hebergeur Node, ajoute son adresse dans la variable GitHub `FLOWIFY_API_URL`; il n'y a rien a saisir dans l'app.
