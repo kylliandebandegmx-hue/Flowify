@@ -24,6 +24,19 @@ Les workflows utilisent Node 22 :
 - `.github/workflows/android.yml` genere l'APK debug et autorise `android/gradlew` avant la compilation.
 - `.github/workflows/check.yml` lance les checks.
 
+## URL API Flowify yt-dlp
+
+Cette URL est creee quand tu deploies le serveur Docker Flowify. Le fichier `render.yaml` permet de le faire sur Render depuis GitHub :
+
+1. Upload/push ce repo sur GitHub.
+2. Va sur Render, puis `New` > `Blueprint`.
+3. Connecte le repo `Flowify`.
+4. Render detecte `render.yaml` et cree le service `flowify-api`.
+5. Quand le deploy est fini, copie l'URL Render du type `https://flowify-api-xxxx.onrender.com`.
+6. Colle cette URL dans Flowify > `Parametres` > `URL API Flowify yt-dlp`.
+
+Tu peux aussi mettre cette meme URL dans la variable GitHub `FLOWIFY_API_URL` pour que le PWA GitHub Pages et l'APK soient preconfigures au build.
+
 ## APK
 
 Build local Windows :

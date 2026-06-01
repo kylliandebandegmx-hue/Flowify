@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: flowify-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8787
+      - key: YTDLP_PATH
+        value: yt-dlp
+      - key: STATIC_DIR
+        value: /app/apps/web/dist
+      - key: CORS_ORIGIN
+        value: "true"
