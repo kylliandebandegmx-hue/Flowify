@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
@@ -25,7 +25,6 @@ const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || '';
 const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY || '';
 const r2Bucket = process.env.R2_BUCKET || '';
 const r2PublicBaseUrl = normalizeBaseUrl(process.env.R2_PUBLIC_BASE_URL || '');
-const cloudUploadLimit = process.env.CLOUD_UPLOAD_LIMIT || '80mb';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const downloadDir = path.resolve(
   process.cwd(),
@@ -163,10 +162,9 @@ app.get('/api/stream/:videoId', async (req, res, next) => {
   }
 });
 
-app.post('/api/cloud/upload', express.raw({ type: ['audio/*', 'application/octet-stream'], limit: cloudUploadLimit }), async (req, res, next) => {
+app.post('/api/cloud/upload', async (req, res, next) => {
   try {
     if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
-    if (!Buffer.isBuffer(req.body) || !req.body.length) throw httpError(400, 'Fichier audio manquant');
 
     const contentType = normalizeContentType(req.headers['content-type']);
     if (!contentType.startsWith('audio/') && contentType !== 'application/octet-stream') {
@@ -175,22 +173,38 @@ app.post('/api/cloud/upload', express.raw({ type: ['audio/*', 'application/octet
 
     const originalName = cleanFileName(decodeHeaderValue(String(req.headers['x-file-name'] || 'flowify-track')));
     const key = `cloud/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${originalName}`;
+    const contentLength = parseContentLength(req.headers['content-length']);
+    let uploadedBytes = 0;
 
-    await getR2Client().send(new PutObjectCommand({
+    const body = req.pipe(new Transform({
+      transform(chunk, _encoding, callback) {
+        uploadedBytes += chunk.length;
+        callback(null, chunk);
+      },
+    }));
+
+    const command = {
       Bucket: r2Bucket,
       Key: key,
-      Body: req.body,
+      Body: body,
       ContentType: contentType,
       Metadata: {
         originalName,
       },
-    }));
+    };
+    if (contentLength) {
+      command.ContentLength = contentLength;
+    }
+
+    await getR2Client().send(new PutObjectCommand(command));
+
+    if (!uploadedBytes) throw httpError(400, 'Fichier audio manquant');
 
     res.json({
       key,
       fileName: originalName,
       contentType,
-      sizeBytes: req.body.length,
+      sizeBytes: uploadedBytes,
       url: publicR2Url(key),
     });
   } catch (err) {
@@ -562,6 +576,11 @@ function ensureCloudKey(value) {
 
 function normalizeContentType(value) {
   return String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+}
+
+function parseContentLength(value) {
+  const size = Number(value || 0);
+  return Number.isFinite(size) && size > 0 ? size : 0;
 }
 
 function normalizeBaseUrl(value) {
