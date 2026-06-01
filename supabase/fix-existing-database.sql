@@ -1,5 +1,3 @@
-create extension if not exists pgcrypto;
-
 alter table public.playlists
   add column if not exists invite_code text;
 
@@ -155,6 +153,85 @@ create policy "playlist tracks insertable through membership"
 create policy "playlist tracks deletable through membership"
   on public.playlist_tracks for delete
   using (public.can_access_playlist(playlist_id));
+
+create or replace function public.add_track_to_playlist(
+  target_playlist_id uuid,
+  target_youtube_id text,
+  target_position integer,
+  track_payload jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.can_access_playlist(target_playlist_id) then
+    raise exception 'playlist inaccessible';
+  end if;
+
+  insert into public.playlist_tracks (playlist_id, youtube_id, position, track, added_by)
+  values (target_playlist_id, target_youtube_id, target_position, track_payload, auth.uid())
+  on conflict (playlist_id, youtube_id) do update
+  set track = excluded.track,
+      position = excluded.position,
+      added_by = excluded.added_by;
+end;
+$$;
+
+grant execute on function public.add_track_to_playlist(uuid, text, integer, jsonb) to authenticated;
+
+create or replace function public.remove_track_from_playlist(
+  target_playlist_id uuid,
+  target_youtube_id text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.can_access_playlist(target_playlist_id) then
+    raise exception 'playlist inaccessible';
+  end if;
+
+  delete from public.playlist_tracks
+  where playlist_id = target_playlist_id
+  and youtube_id = target_youtube_id;
+end;
+$$;
+
+grant execute on function public.remove_track_from_playlist(uuid, text) to authenticated;
+
+create or replace function public.delete_playlist(target_playlist_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_playlist_owner(target_playlist_id) then
+    raise exception 'seul le proprietaire peut supprimer la playlist';
+  end if;
+
+  delete from public.playlists
+  where id = target_playlist_id;
+end;
+$$;
+
+grant execute on function public.delete_playlist(uuid) to authenticated;
 
 create or replace function public.add_owner_as_playlist_member()
 returns trigger

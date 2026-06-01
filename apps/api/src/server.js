@@ -17,6 +17,10 @@ const downloadDir = path.resolve(
   process.cwd(),
   process.env.DOWNLOAD_DIR || path.join(__dirname, '..', '.flowify-downloads'),
 );
+const staticDir = path.resolve(
+  process.cwd(),
+  process.env.STATIC_DIR || path.join(__dirname, '..', '..', 'web', 'dist'),
+);
 
 const streamCache = new Map();
 const cacheTtlMs = 10 * 60 * 1000;
@@ -195,6 +199,22 @@ app.use('/downloads', express.static(downloadDir, {
   immutable: true,
   maxAge: '7d',
 }));
+
+app.use(express.static(staticDir, {
+  immutable: true,
+  index: false,
+  maxAge: '1h',
+}));
+
+app.get('*', async (_req, res, next) => {
+  const indexPath = path.join(staticDir, 'index.html');
+  try {
+    await fs.access(indexPath);
+    res.sendFile(indexPath);
+  } catch {
+    next();
+  }
+});
 
 app.use((err, _req, res, _next) => {
   const status = err.status || 500;

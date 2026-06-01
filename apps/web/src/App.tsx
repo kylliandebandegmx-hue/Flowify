@@ -415,11 +415,9 @@ export default function App() {
     setPlaylistBusy(true);
     setMessage('');
     try {
-      const { error } = await supabase
-        .from('playlists')
-        .delete()
-        .eq('id', playlist.id)
-        .eq('owner_id', user.id);
+      const { error } = await supabase.rpc('delete_playlist', {
+        target_playlist_id: playlist.id,
+      });
 
       if (error) throw error;
       if (activePlaylistId === playlist.id) setActivePlaylistId('');
@@ -441,16 +439,15 @@ export default function App() {
     const position = playlist.tracks.length
       ? playlist.tracks.length * 1000 + 1000
       : 1000;
-    const { error } = await supabase.from('playlist_tracks').insert({
-      playlist_id: playlist.id,
-      youtube_id: track.id,
-      position,
-      track,
-      added_by: user.id,
+    const { error } = await supabase.rpc('add_track_to_playlist', {
+      target_playlist_id: playlist.id,
+      target_youtube_id: track.id,
+      target_position: position,
+      track_payload: track,
     });
 
     if (error) {
-      setMessage(error.code === '23505' ? 'Ce titre est deja dans la playlist.' : error.message);
+      setMessage(errorMessage(error));
       return;
     }
 
@@ -462,14 +459,13 @@ export default function App() {
   const removeTrackFromPlaylist = async (track: Track) => {
     if (!user || !activePlaylist) return;
 
-    const { error } = await supabase
-      .from('playlist_tracks')
-      .delete()
-      .eq('playlist_id', activePlaylist.id)
-      .eq('youtube_id', track.id);
+    const { error } = await supabase.rpc('remove_track_from_playlist', {
+      target_playlist_id: activePlaylist.id,
+      target_youtube_id: track.id,
+    });
 
     if (error) {
-      setMessage(error.message);
+      setMessage(errorMessage(error));
       return;
     }
     await loadPlaylists(user);

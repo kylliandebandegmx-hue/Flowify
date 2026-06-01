@@ -1,8 +1,11 @@
 import type { ApiHealth, SearchResult, Track } from '../types';
 
 const YOUTUBE_KEY_STORAGE_KEY = 'flowify-youtube-api-key';
+const FLOWIFY_API_STORAGE_KEY = 'flowify-api-base-url';
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
-const FLOWIFY_API_BASE = normalizeApiBase(import.meta.env.VITE_FLOWIFY_API_URL || defaultLocalApiBase());
+let flowifyApiBase = normalizeApiBase(
+  import.meta.env.VITE_FLOWIFY_API_URL || readStorage(FLOWIFY_API_STORAGE_KEY),
+);
 
 export function getYoutubeApiKey(): string {
   return readStorage(YOUTUBE_KEY_STORAGE_KEY);
@@ -18,22 +21,13 @@ export function clearYoutubeApiKey(): void {
 
 export async function getHealth(): Promise<ApiHealth> {
   const youtubeConfigured = Boolean(getYoutubeApiKey());
-  if (FLOWIFY_API_BASE) {
-    try {
-      const response = await fetch(apiUrl('/health'), { headers: apiHeaders() });
-      const health = (await response.json()) as ApiHealth;
-      return {
-        ok: response.ok && (health.ok || youtubeConfigured),
-        youtubeConfigured: Boolean(health.youtubeConfigured || youtubeConfigured),
-        ytdlpAvailable: Boolean(health.ytdlpAvailable),
-      };
-    } catch {
-      return {
-        ok: youtubeConfigured,
-        youtubeConfigured,
-        ytdlpAvailable: false,
-      };
-    }
+  const apiHealth = await detectApiHealth();
+  if (apiHealth) {
+    return {
+      ok: apiHealth.ok || youtubeConfigured,
+      youtubeConfigured: Boolean(apiHealth.youtubeConfigured || youtubeConfigured),
+      ytdlpAvailable: Boolean(apiHealth.ytdlpAvailable),
+    };
   }
 
   return {
@@ -102,8 +96,9 @@ export async function resolveYouTubeUrl(url: string): Promise<SearchResult> {
 
 export async function downloadTrack(_track?: Track): Promise<{ filename: string; url: string }> {
   if (!_track) throw new Error('Aucun titre a telecharger.');
-  if (!FLOWIFY_API_BASE) {
-    throw new Error('Telechargement yt-dlp indisponible: lance ou deploie apps/api.');
+  await detectApiHealth();
+  if (!flowifyApiBase) {
+    throw new Error('Telechargement yt-dlp indisponible: configure FLOWIFY_API_URL.');
   }
 
   const response = await fetch(apiUrl(`/api/download/${encodeURIComponent(_track.id)}`), {
@@ -119,13 +114,13 @@ export async function downloadTrack(_track?: Track): Promise<{ filename: string;
 }
 
 export function streamUrl(track: Track | string): string {
-  if (!FLOWIFY_API_BASE) return '';
+  if (!flowifyApiBase) return '';
   const videoId = typeof track === 'string' ? track : track.id;
   return apiUrl(`/api/stream/${encodeURIComponent(videoId)}`);
 }
 
 export function hasYtdlpAudioApi(): boolean {
-  return Boolean(FLOWIFY_API_BASE);
+  return Boolean(flowifyApiBase);
 }
 
 async function getPlaylistTracks(playlistId: string): Promise<SearchResult> {
@@ -256,18 +251,77 @@ function apiHeaders(): HeadersInit {
 function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path;
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  return `${FLOWIFY_API_BASE}${cleanPath}`;
+  return `${flowifyApiBase}${cleanPath}`;
 }
 
 function normalizeApiBase(value: string): string {
   return value.trim().replace(/\/+$/, '');
 }
 
+async function detectApiHealth(): Promise<ApiHealth | null> {
+  const candidates = await apiBaseCandidates();
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(`${candidate}/health`, { headers: apiHeaders() });
+      const payload = (await response.json()) as ApiHealth;
+      if (response.ok) {
+        flowifyApiBase = candidate;
+        writeStorage(FLOWIFY_API_STORAGE_KEY, candidate);
+        return {
+          ok: Boolean(payload.ok),
+          youtubeConfigured: Boolean(payload.youtubeConfigured),
+          ytdlpAvailable: Boolean(payload.ytdlpAvailable),
+        };
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+async function apiBaseCandidates(): Promise<string[]> {
+  const runtimeConfig = await readRuntimeConfig();
+  return uniqueValues([
+    flowifyApiBase,
+    import.meta.env.VITE_FLOWIFY_API_URL,
+    runtimeConfig.apiBaseUrl,
+    readStorage(FLOWIFY_API_STORAGE_KEY),
+    sameOriginApiBase(),
+    defaultLocalApiBase(),
+  ].map((value) => normalizeApiBase(value || '')));
+}
+
+async function readRuntimeConfig(): Promise<{ apiBaseUrl?: string }> {
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL}flowify-config.json`, {
+      cache: 'no-store',
+    });
+    if (!response.ok) return {};
+    const payload = await response.json();
+    return {
+      apiBaseUrl: typeof payload.apiBaseUrl === 'string' ? payload.apiBaseUrl : '',
+    };
+  } catch {
+    return {};
+  }
+}
+
+function sameOriginApiBase(): string {
+  if (typeof window === 'undefined') return '';
+  if (!['http:', 'https:'].includes(window.location.protocol)) return '';
+  return window.location.origin;
+}
+
 function defaultLocalApiBase(): string {
   if (typeof window === 'undefined') return '';
-  return ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname) && window.location.port
     ? 'http://localhost:8787'
     : '';
+}
+
+function uniqueValues(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }
 
 interface YouTubeSearchResponse {

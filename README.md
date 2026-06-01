@@ -8,6 +8,7 @@ Dans l'app, l'utilisateur doit seulement renseigner sa cle YouTube Data API v3 d
 
 La recherche utilise YouTube Data API v3 directement depuis l'app. La lecture et le telechargement passent uniquement par `yt-dlp` dans `apps/api`.
 Pour que l'audio fonctionne sur le PWA GitHub Pages ou l'APK, `apps/api` doit etre disponible sur une URL HTTPS et renseignee dans la variable GitHub `FLOWIFY_API_URL`.
+Le `Dockerfile` a la racine build le PWA et lance l'API Flowify avec `yt-dlp`; si tu deploies cette image, le PWA et l'audio peuvent tourner sur la meme URL.
 
 ## Supabase
 
