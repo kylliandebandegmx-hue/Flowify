@@ -46,6 +46,13 @@ export interface CloudTrackRow {
   created_at: string;
 }
 
+export interface Profile {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+}
+
 export interface SavedTrackRow {
   id: string;
   user_id: string;
@@ -75,6 +82,14 @@ export interface PlaylistMemberRow {
   joined_at?: string;
 }
 
+export interface PlaylistMember {
+  userId: string;
+  role: 'owner' | 'member';
+  displayName: string;
+  avatarUrl: string;
+  joinedAt?: string;
+}
+
 export interface PlaylistRow {
   id: string;
   owner_id: string;
@@ -92,6 +107,7 @@ export interface Playlist {
   name: string;
   inviteCode: string;
   tracks: Track[];
+  members: PlaylistMember[];
   memberCount: number;
   createdAt: string;
   updatedAt: string;

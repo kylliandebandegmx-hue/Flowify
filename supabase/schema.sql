@@ -77,6 +77,26 @@ create table if not exists public.playlist_members (
 alter table public.playlist_members
   add column if not exists joined_at timestamptz not null default now();
 
+alter table public.playlist_members
+  add column if not exists role text;
+
+alter table public.playlist_members
+  drop constraint if exists playlist_members_role_check;
+
+alter table public.playlist_members
+  alter column role set default 'member';
+
+update public.playlist_members
+set role = 'member'
+where role is null
+or role not in ('owner', 'member');
+
+alter table public.playlist_members
+  alter column role set not null;
+
+alter table public.playlist_members
+  add constraint playlist_members_role_check check (role in ('owner', 'member'));
+
 create table if not exists public.playlist_tracks (
   id uuid primary key default gen_random_uuid(),
   playlist_id uuid not null references public.playlists(id) on delete cascade,
@@ -138,6 +158,7 @@ alter table public.playlist_members enable row level security;
 alter table public.playlist_tracks enable row level security;
 
 drop policy if exists "profiles are readable by owner" on public.profiles;
+drop policy if exists "profiles are readable by authenticated" on public.profiles;
 drop policy if exists "profiles are insertable by owner" on public.profiles;
 drop policy if exists "profiles are updatable by owner" on public.profiles;
 drop policy if exists "saved tracks are readable by owner" on public.saved_tracks;
@@ -195,9 +216,10 @@ as $$
     or public.is_playlist_member(target_playlist_id);
 $$;
 
-create policy "profiles are readable by owner"
+create policy "profiles are readable by authenticated"
   on public.profiles for select
-  using (auth.uid() = id);
+  to authenticated
+  using (true);
 
 create policy "profiles are insertable by owner"
   on public.profiles for insert
@@ -538,6 +560,13 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.cloud_tracks;
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.profiles;
 exception
   when duplicate_object then null;
 end $$;

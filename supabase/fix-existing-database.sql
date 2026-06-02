@@ -1,5 +1,14 @@
 create extension if not exists pgcrypto;
 
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text,
+  display_name text,
+  avatar_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 alter table public.playlists
   add column if not exists invite_code text;
 
@@ -51,6 +60,26 @@ create unique index if not exists playlists_invite_code_idx
 
 alter table public.playlist_members
   add column if not exists joined_at timestamptz not null default now();
+
+alter table public.playlist_members
+  add column if not exists role text;
+
+alter table public.playlist_members
+  drop constraint if exists playlist_members_role_check;
+
+alter table public.playlist_members
+  alter column role set default 'member';
+
+update public.playlist_members
+set role = 'member'
+where role is null
+or role not in ('owner', 'member');
+
+alter table public.playlist_members
+  alter column role set not null;
+
+alter table public.playlist_members
+  add constraint playlist_members_role_check check (role in ('owner', 'member'));
 
 alter table public.playlist_tracks
   add column if not exists position integer not null default 0;
@@ -126,11 +155,16 @@ as $$
     or public.is_playlist_member(target_playlist_id);
 $$;
 
+alter table public.profiles enable row level security;
 alter table public.playlists enable row level security;
 alter table public.cloud_tracks enable row level security;
 alter table public.playlist_members enable row level security;
 alter table public.playlist_tracks enable row level security;
 
+drop policy if exists "profiles are readable by owner" on public.profiles;
+drop policy if exists "profiles are readable by authenticated" on public.profiles;
+drop policy if exists "profiles are insertable by owner" on public.profiles;
+drop policy if exists "profiles are updatable by owner" on public.profiles;
 drop policy if exists "playlists are readable by members" on public.playlists;
 drop policy if exists "cloud tracks are readable by owner" on public.cloud_tracks;
 drop policy if exists "cloud tracks are insertable by owner" on public.cloud_tracks;
@@ -144,6 +178,20 @@ drop policy if exists "playlist members are deletable by self or owner" on publi
 drop policy if exists "playlist tracks readable through membership" on public.playlist_tracks;
 drop policy if exists "playlist tracks insertable through membership" on public.playlist_tracks;
 drop policy if exists "playlist tracks deletable through membership" on public.playlist_tracks;
+
+create policy "profiles are readable by authenticated"
+  on public.profiles for select
+  to authenticated
+  using (true);
+
+create policy "profiles are insertable by owner"
+  on public.profiles for insert
+  with check (auth.uid() = id);
+
+create policy "profiles are updatable by owner"
+  on public.profiles for update
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
 
 create policy "cloud tracks are readable by owner"
   on public.cloud_tracks for select
@@ -448,6 +496,13 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.cloud_tracks;
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.profiles;
 exception
   when duplicate_object then null;
 end $$;

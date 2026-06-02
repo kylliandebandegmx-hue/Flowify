@@ -6,10 +6,12 @@ import {
   Download,
   Heart,
   Home,
+  Image as ImageIcon,
   ListMusic,
   Loader2,
   LogIn,
   LogOut,
+  Menu,
   Pause,
   Play,
   Plus,
@@ -22,6 +24,8 @@ import {
   Trash2,
   UserPlus,
   Users,
+  Volume2,
+  X,
 } from 'lucide-react';
 import {
   ChangeEvent,
@@ -57,6 +61,7 @@ import type {
   CloudTrackRow,
   Playlist,
   PlaylistRow,
+  Profile,
   SavedTrackRow,
   Track,
 } from './types';
@@ -85,6 +90,10 @@ export default function App() {
   const [cloudTracks, setCloudTracks] = useState<Track[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileDisplayName, setProfileDisplayName] = useState('');
+  const [profileAvatarUrl, setProfileAvatarUrl] = useState('');
+  const [profileBusy, setProfileBusy] = useState(false);
   const [activePlaylistId, setActivePlaylistId] = useState('');
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
@@ -106,9 +115,12 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [volume, setVolume] = useState(() => getInitialVolume());
+  const [volumeOpen, setVolumeOpen] = useState(false);
   const [downloadBusy, setDownloadBusy] = useState<Record<string, boolean>>({});
   const [cloudDeleteBusy, setCloudDeleteBusy] = useState<Record<string, boolean>>({});
   const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [standalone, setStandalone] = useState(false);
@@ -147,6 +159,11 @@ export default function App() {
     return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall);
   }, []);
 
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.volume = volume;
+    localStorage.setItem('flowify.volume', String(volume));
+  }, [volume]);
+
   const refreshHealth = useCallback(async () => {
     setHealthLoading(true);
     try {
@@ -176,6 +193,55 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const loadProfile = useCallback(async (activeUser: User) => {
+    const fallbackName = displayNameFromEmail(activeUser.email) || 'Flowify';
+    const fallbackProfile: Profile = {
+      id: activeUser.id,
+      email: activeUser.email || null,
+      display_name: fallbackName,
+      avatar_url: null,
+    };
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, email, display_name, avatar_url')
+      .eq('id', activeUser.id)
+      .maybeSingle();
+
+    if (error) {
+      setProfile(fallbackProfile);
+      setProfileDisplayName(fallbackName);
+      setProfileAvatarUrl('');
+      return;
+    }
+
+    if (!data) {
+      const { data: created, error: createError } = await supabase
+        .from('profiles')
+        .upsert(fallbackProfile)
+        .select('id, email, display_name, avatar_url')
+        .single();
+
+      if (createError) {
+        setProfile(fallbackProfile);
+        setProfileDisplayName(fallbackName);
+        setProfileAvatarUrl('');
+        return;
+      }
+
+      const nextProfile = created as Profile;
+      setProfile(nextProfile);
+      setProfileDisplayName(nextProfile.display_name || fallbackName);
+      setProfileAvatarUrl(nextProfile.avatar_url || '');
+      return;
+    }
+
+    const nextProfile = data as Profile;
+    setProfile(nextProfile);
+    setProfileDisplayName(nextProfile.display_name || fallbackName);
+    setProfileAvatarUrl(nextProfile.avatar_url || '');
   }, []);
 
   const loadSavedTracks = useCallback(async (activeUser: User) => {
@@ -223,7 +289,7 @@ export default function App() {
     const { data, error } = await supabase
       .from('playlists')
       .select(
-        'id, owner_id, name, invite_code, created_at, updated_at, playlist_tracks(id, playlist_id, track, created_at), playlist_members(playlist_id, user_id, role)',
+        'id, owner_id, name, invite_code, created_at, updated_at, playlist_tracks(id, playlist_id, track, created_at), playlist_members(playlist_id, user_id, role, joined_at)',
       )
       .order('updated_at', { ascending: false });
 
@@ -233,23 +299,65 @@ export default function App() {
     }
 
     const rows = (data || []) as unknown as PlaylistRow[];
-    const mapped = rows.map((row) => ({
-      id: row.id,
-      ownerId: row.owner_id,
-      name: row.name,
-      inviteCode: row.invite_code,
-      memberCount: row.playlist_members?.length || 1,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      tracks: [...(row.playlist_tracks || [])]
-        .sort((a, b) => {
-          const byPosition = (a.position || 0) - (b.position || 0);
-          if (byPosition !== 0) return byPosition;
-          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-        })
-        .map((trackRow) => trackRow.track)
-        .filter(Boolean),
-    }));
+    const userIds = Array.from(new Set(rows.flatMap((row) => {
+      const memberIds = (row.playlist_members || []).map((member) => member.user_id);
+      return [row.owner_id, ...memberIds];
+    }).filter(Boolean)));
+    const profilesById = new Map<string, Profile>();
+
+    if (userIds.length) {
+      const { data: profileRows } = await supabase
+        .from('profiles')
+        .select('id, email, display_name, avatar_url')
+        .in('id', userIds);
+
+      ((profileRows || []) as Profile[]).forEach((memberProfile) => {
+        profilesById.set(memberProfile.id, memberProfile);
+      });
+    }
+
+    const mapped = rows.map((row) => {
+      const rawMembers = row.playlist_members || [];
+      const members = [
+        ...(rawMembers.some((member) => member.user_id === row.owner_id)
+          ? []
+          : [{ playlist_id: row.id, user_id: row.owner_id, role: 'owner' as const, joined_at: row.created_at }]),
+        ...rawMembers,
+      ].map((member) => {
+        const memberProfile = profilesById.get(member.user_id);
+        const displayName =
+          memberProfile?.display_name ||
+          displayNameFromEmail(memberProfile?.email) ||
+          (member.role === 'owner' ? 'Createur' : 'Membre');
+
+        return {
+          userId: member.user_id,
+          role: member.role,
+          displayName,
+          avatarUrl: memberProfile?.avatar_url || '',
+          joinedAt: member.joined_at,
+        };
+      });
+
+      return {
+        id: row.id,
+        ownerId: row.owner_id,
+        name: row.name,
+        inviteCode: row.invite_code,
+        members,
+        memberCount: members.length || 1,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        tracks: [...(row.playlist_tracks || [])]
+          .sort((a, b) => {
+            const byPosition = (a.position || 0) - (b.position || 0);
+            if (byPosition !== 0) return byPosition;
+            return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+          })
+          .map((trackRow) => trackRow.track)
+          .filter(Boolean),
+      };
+    });
 
     setPlaylists(mapped);
     setActivePlaylistId((current) => {
@@ -266,11 +374,12 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    loadProfile(user);
     loadSavedTracks(user);
     loadCloudTracks(user);
     loadPlaylists(user);
     loadTrending();
-  }, [loadCloudTracks, loadSavedTracks, loadPlaylists, loadTrending, user]);
+  }, [loadCloudTracks, loadProfile, loadSavedTracks, loadPlaylists, loadTrending, user]);
 
   useEffect(() => {
     if (!user) return undefined;
@@ -284,6 +393,7 @@ export default function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'playlists' }, reloadPlaylists)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'playlist_members' }, reloadPlaylists)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'playlist_tracks' }, reloadPlaylists)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, reloadPlaylists)
       .subscribe();
 
     return () => {
@@ -322,9 +432,13 @@ export default function App() {
     setCloudTracks([]);
     setSavedIds(new Set());
     setPlaylists([]);
+    setProfile(null);
+    setProfileDisplayName('');
+    setProfileAvatarUrl('');
     setTracks([]);
     setCurrentTrack(null);
     setPlaying(false);
+    setSidebarOpen(false);
   };
 
   const submitSearch = async (event?: FormEvent) => {
@@ -341,6 +455,7 @@ export default function App() {
       setTracks(result.tracks);
       setNextPageToken(result.nextPageToken || '');
       setView('search');
+      setSidebarOpen(false);
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -381,6 +496,7 @@ export default function App() {
       if (data?.id) {
         setActivePlaylistId(data.id);
         setView('playlists');
+        setSidebarOpen(false);
       }
     } catch (error) {
       setMessage(errorMessage(error));
@@ -406,6 +522,7 @@ export default function App() {
       if (data) {
         setActivePlaylistId(String(data));
         setView('playlists');
+        setSidebarOpen(false);
         setMessage('Playlist rejointe.');
       }
     } catch (error) {
@@ -481,6 +598,66 @@ export default function App() {
     setMessage('Parametres sauvegardes.');
     await refreshHealth();
     if (user) await loadTrending();
+  };
+
+  const saveProfile = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!user) return;
+
+    const displayName = profileDisplayName.trim() || displayNameFromEmail(user.email) || 'Flowify';
+    const avatarUrl = profileAvatarUrl.trim();
+    setProfileBusy(true);
+    setMessage('');
+
+    try {
+      const payload = {
+        id: user.id,
+        email: user.email || null,
+        display_name: displayName,
+        avatar_url: avatarUrl || null,
+      };
+      const { data, error } = await supabase
+        .from('profiles')
+        .upsert(payload)
+        .select('id, email, display_name, avatar_url')
+        .single();
+
+      if (error) throw error;
+
+      const nextProfile = data as Profile;
+      setProfile(nextProfile);
+      setProfileDisplayName(nextProfile.display_name || displayName);
+      setProfileAvatarUrl(nextProfile.avatar_url || '');
+      await loadPlaylists(user);
+      setMessage('Profil sauvegarde.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+
+  const selectProfilePhoto = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setMessage('Choisis une image pour la photo de profil.');
+      return;
+    }
+    if (file.size > 750_000) {
+      setMessage('Image trop lourde. Choisis moins de 750 Ko.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setProfileAvatarUrl(reader.result);
+      }
+    };
+    reader.onerror = () => setMessage('Impossible de charger cette image.');
+    reader.readAsDataURL(file);
   };
 
   const removeYoutubeKey = async () => {
@@ -637,6 +814,17 @@ export default function App() {
   const openPlaylist = (playlist: Playlist) => {
     setActivePlaylistId(playlist.id);
     setView('playlists');
+    setSidebarOpen(false);
+  };
+
+  const openView = (nextView: ViewMode) => {
+    setView(nextView);
+    setSidebarOpen(false);
+  };
+
+  const openTrending = () => {
+    setSidebarOpen(false);
+    void loadTrending();
   };
 
   const playTrack = async (track: Track, list = visibleTracks, index = 0) => {
@@ -683,6 +871,7 @@ export default function App() {
     audio.pause();
     audio.removeAttribute('src');
     audio.preload = 'metadata';
+    audio.volume = volume;
     audio.src = source;
     audio.load();
     try {
@@ -829,9 +1018,25 @@ export default function App() {
         onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime || 0)}
       />
 
-      <aside className="sidebar">
-        <div className="brand">
-          <img src={`${import.meta.env.BASE_URL}flowify-logo.png`} alt="Flowify" />
+      {user && (
+        <>
+          <button className="sidebar-toggle" aria-label="Ouvrir le menu" onClick={() => setSidebarOpen(true)} type="button">
+            <Menu size={22} />
+          </button>
+          {sidebarOpen && <button className="sidebar-backdrop" aria-label="Fermer le menu" onClick={() => setSidebarOpen(false)} type="button" />}
+        </>
+      )}
+
+      <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
+        <div className="sidebar-head">
+          <div className="brand">
+            <img src={`${import.meta.env.BASE_URL}flowify-logo.png`} alt="Flowify" />
+          </div>
+          {user && (
+            <button className="sidebar-close" aria-label="Fermer le menu" onClick={() => setSidebarOpen(false)} type="button">
+              <X size={18} />
+            </button>
+          )}
         </div>
 
         {user && (
@@ -849,26 +1054,26 @@ export default function App() {
             </form>
 
             <nav className="nav-list">
-              <button className={view === 'home' ? 'active' : ''} onClick={loadTrending} type="button">
+              <button className={view === 'home' ? 'active' : ''} onClick={openTrending} type="button">
                 <Home size={18} />
                 Tendances
               </button>
-              <button className={view === 'library' ? 'active' : ''} onClick={() => setView('library')} type="button">
+              <button className={view === 'library' ? 'active' : ''} onClick={() => openView('library')} type="button">
                 <Heart size={18} />
                 Bibliotheque
                 <span>{savedTracks.length}</span>
               </button>
-              <button className={view === 'cloud' ? 'active' : ''} onClick={() => setView('cloud')} type="button">
+              <button className={view === 'cloud' ? 'active' : ''} onClick={() => openView('cloud')} type="button">
                 <Cloud size={18} />
                 Cloud
                 <span>{cloudTracks.length}</span>
               </button>
-              <button className={view === 'playlists' ? 'active' : ''} onClick={() => setView('playlists')} type="button">
+              <button className={view === 'playlists' ? 'active' : ''} onClick={() => openView('playlists')} type="button">
                 <ListMusic size={18} />
                 Playlists
                 <span>{playlists.length}</span>
               </button>
-              <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')} type="button">
+              <button className={view === 'settings' ? 'active' : ''} onClick={() => openView('settings')} type="button">
                 <Settings size={18} />
                 Parametres
               </button>
@@ -929,9 +1134,17 @@ export default function App() {
         <div className="account-panel">
           {user ? (
             <>
-              <div>
-                <strong>{user.email}</strong>
-                <span>{standalone ? 'PWA installe' : 'PWA web'}</span>
+              <div className="account-profile">
+                <ProfileAvatar
+                  avatarUrl={profile?.avatar_url}
+                  className="account-avatar"
+                  label={profile?.display_name || user.email || 'Flowify'}
+                />
+                <div>
+                  <strong>{profile?.display_name || displayNameFromEmail(user.email) || 'Flowify'}</strong>
+                  <span>{user.email}</span>
+                  <span>{standalone ? 'PWA installe' : 'PWA web'}</span>
+                </div>
               </div>
               <button aria-label="Se deconnecter" onClick={signOut} type="button">
                 <LogOut size={18} />
@@ -1007,6 +1220,46 @@ export default function App() {
 
             {view === 'settings' ? (
               <section className="settings-grid">
+                <form className="settings-card settings-form" onSubmit={saveProfile}>
+                  <h2>Profil</h2>
+                  <div className="profile-editor">
+                    <ProfileAvatar
+                      avatarUrl={profileAvatarUrl}
+                      className="profile-preview"
+                      label={profileDisplayName || user.email || 'Flowify'}
+                    />
+                    <div>
+                      <label>
+                        Pseudo
+                        <input
+                          value={profileDisplayName}
+                          onChange={(event) => setProfileDisplayName(event.target.value)}
+                          placeholder="Ton pseudo"
+                        />
+                      </label>
+                      <label>
+                        Photo de profil
+                        <input
+                          value={profileAvatarUrl}
+                          onChange={(event) => setProfileAvatarUrl(event.target.value)}
+                          placeholder="URL image ou image locale"
+                        />
+                      </label>
+                      <label className="profile-photo-picker">
+                        <ImageIcon size={16} />
+                        Choisir une image
+                        <input accept="image/*" onChange={selectProfilePhoto} type="file" />
+                      </label>
+                    </div>
+                  </div>
+                  <div className="settings-actions">
+                    <button className="code-pill" disabled={profileBusy} type="submit">
+                      {profileBusy ? <Loader2 className="spin" size={16} /> : <Settings size={16} />}
+                      Sauvegarder
+                    </button>
+                  </div>
+                  <span>Visible par les membres de tes playlists.</span>
+                </form>
                 <form className="settings-card settings-form" onSubmit={saveSettings}>
                   <h2>Connexions</h2>
                   <label>
@@ -1092,6 +1345,19 @@ export default function App() {
                         <div>
                           <Users size={18} />
                           {activePlaylist.memberCount} membre{activePlaylist.memberCount > 1 ? 's' : ''}
+                        </div>
+                        <div className="member-strip" aria-label="Membres de la playlist">
+                          {activePlaylist.members.slice(0, 6).map((member) => (
+                            <ProfileAvatar
+                              avatarUrl={member.avatarUrl}
+                              className="member-avatar"
+                              key={member.userId}
+                              label={member.displayName}
+                            />
+                          ))}
+                          {activePlaylist.memberCount > 6 && (
+                            <span className="member-extra">+{activePlaylist.memberCount - 6}</span>
+                          )}
                         </div>
                         <button className="code-pill" onClick={() => copyInviteCode(activePlaylist)} type="button">
                           <Copy size={16} />
@@ -1203,6 +1469,25 @@ export default function App() {
             <button aria-label="Suivant" onClick={() => playOffset(1)} type="button">
               <SkipForward size={20} />
             </button>
+            <div className="volume-menu">
+              <button aria-label="Volume" className={volumeOpen ? 'active' : ''} onClick={() => setVolumeOpen((open) => !open)} type="button">
+                <Volume2 size={20} />
+              </button>
+              {volumeOpen && (
+                <div className="volume-popover">
+                  <input
+                    aria-label="Volume"
+                    max="1"
+                    min="0"
+                    onChange={(event) => setVolume(Number(event.target.value))}
+                    step="0.01"
+                    type="range"
+                    value={volume}
+                  />
+                  <span>{Math.round(volume * 100)}%</span>
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="progress-wrap">
@@ -1230,6 +1515,46 @@ export default function App() {
         </footer>
       )}
     </div>
+  );
+}
+
+function getInitialVolume() {
+  const saved = Number(localStorage.getItem('flowify.volume'));
+  if (Number.isFinite(saved)) return Math.min(1, Math.max(0, saved));
+  return 1;
+}
+
+function displayNameFromEmail(value?: string | null) {
+  return value?.split('@')[0] || '';
+}
+
+function initials(value: string) {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  const letters = parts.length > 1
+    ? `${parts[0][0]}${parts[1][0]}`
+    : value.trim().slice(0, 2);
+  return (letters || 'F').toUpperCase();
+}
+
+function ProfileAvatar({
+  avatarUrl,
+  className = '',
+  label,
+}: {
+  avatarUrl?: string | null;
+  className?: string;
+  label: string;
+}) {
+  const cleanUrl = avatarUrl?.trim();
+  const classNames = ['profile-avatar', className].filter(Boolean).join(' ');
+  if (cleanUrl) {
+    return <img className={classNames} src={cleanUrl} alt="" loading="lazy" />;
+  }
+
+  return (
+    <span className={classNames} aria-hidden="true">
+      {initials(label)}
+    </span>
   );
 }
 
