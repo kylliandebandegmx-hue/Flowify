@@ -180,6 +180,7 @@ export default function App() {
   const [downloadBusy, setDownloadBusy] = useState<Record<string, boolean>>({});
   const [cloudDeleteBusy, setCloudDeleteBusy] = useState<Record<string, boolean>>({});
   const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
+  const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -204,6 +205,17 @@ export default function App() {
     activePlaylist.tracks.some((track) => track.id === currentTrack.id),
   );
   const activePlaylistPlaying = Boolean(activePlaylistIsCurrent && playing);
+  const selectableTracks = useMemo(() => {
+    if (view === 'cloud') return cloudTracks;
+    if (view === 'playlists') return activePlaylist?.tracks || [];
+    return [];
+  }, [activePlaylist?.tracks, cloudTracks, view]);
+  const selectedTracks = useMemo(
+    () => selectableTracks.filter((track) => selectedTrackIds.has(track.id)),
+    [selectableTracks, selectedTrackIds],
+  );
+  const allSelectableTracksSelected = Boolean(selectableTracks.length && selectedTracks.length === selectableTracks.length);
+  const selectionDeleteBusy = playlistBusy || selectedTracks.some((track) => cloudDeleteBusy[track.id]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -216,6 +228,19 @@ export default function App() {
   useEffect(() => {
     applyThemeColors(primaryColor, secondaryColor);
   }, [primaryColor, secondaryColor]);
+
+  useEffect(() => {
+    setSelectedTrackIds(new Set());
+  }, [activePlaylistId, view]);
+
+  useEffect(() => {
+    setSelectedTrackIds((previous) => {
+      if (!previous.size) return previous;
+      const visibleIds = new Set(selectableTracks.map((track) => track.id));
+      const next = new Set([...previous].filter((trackId) => visibleIds.has(trackId)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [selectableTracks]);
 
   useEffect(() => {
     const onBeforeInstall = (event: Event) => {
@@ -651,11 +676,8 @@ export default function App() {
     }
   };
 
-  const uploadCloudFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || []);
-    event.target.value = '';
+  const uploadCloudFiles = async (files: File[], targetPlaylist?: Playlist | null) => {
     if (!user || !files.length) return;
-
     const audioFiles = files.filter((file) => file.type.startsWith('audio/'));
     if (!audioFiles.length) {
       setMessage('Choisis un fichier audio.');
@@ -663,7 +685,9 @@ export default function App() {
     }
 
     setCloudUploadBusy(true);
-    setMessage(audioFiles.length > 1 ? `Upload Cloud: 0/${audioFiles.length}` : 'Upload Cloud en cours...');
+    setMessage(targetPlaylist
+      ? (audioFiles.length > 1 ? `Upload playlist: 0/${audioFiles.length}` : 'Upload dans la playlist...')
+      : (audioFiles.length > 1 ? `Upload Cloud: 0/${audioFiles.length}` : 'Upload Cloud en cours...'));
     let uploadedCount = 0;
     try {
       for (const file of audioFiles) {
@@ -696,18 +720,53 @@ export default function App() {
         });
         if (error) throw error;
 
+        if (targetPlaylist) {
+          const position = (targetPlaylist.tracks.length + uploadedCount + 1) * 1000;
+          const { error: playlistError } = await supabase.rpc('add_track_to_playlist', {
+            target_playlist_id: targetPlaylist.id,
+            target_youtube_id: track.id,
+            target_position: position,
+            track_payload: track,
+          });
+          if (playlistError) throw playlistError;
+        }
+
         uploadedCount += 1;
-        if (audioFiles.length > 1) setMessage(`Upload Cloud: ${uploadedCount}/${audioFiles.length}`);
+        if (audioFiles.length > 1) {
+          setMessage(targetPlaylist
+            ? `Upload playlist: ${uploadedCount}/${audioFiles.length}`
+            : `Upload Cloud: ${uploadedCount}/${audioFiles.length}`);
+        }
       }
 
       await loadCloudTracks(user);
-      setView('cloud');
-      setMessage(uploadedCount > 1 ? `${uploadedCount} musiques ajoutees au Cloud.` : 'Musique ajoutee au Cloud.');
+      if (targetPlaylist) {
+        setActivePlaylistId(targetPlaylist.id);
+        setView('playlists');
+      } else {
+        setView('cloud');
+      }
+      await loadPlaylists(user);
+      setMessage(targetPlaylist
+        ? (uploadedCount > 1 ? `${uploadedCount} musiques ajoutees dans ${targetPlaylist.name}.` : `Musique ajoutee dans ${targetPlaylist.name}.`)
+        : (uploadedCount > 1 ? `${uploadedCount} musiques ajoutees au Cloud.` : 'Musique ajoutee au Cloud.'));
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
       setCloudUploadBusy(false);
     }
+  };
+
+  const uploadCloudFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    await uploadCloudFiles(files);
+  };
+
+  const uploadCloudFileToPlaylist = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    await uploadCloudFiles(files, activePlaylist);
   };
 
   const saveSettings = async (event: FormEvent) => {
@@ -903,6 +962,37 @@ export default function App() {
     }
   };
 
+  const toggleTrackSelection = (track: Track) => {
+    setSelectedTrackIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(track.id)) next.delete(track.id);
+      else next.add(track.id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllTracks = () => {
+    setSelectedTrackIds(() => {
+      if (allSelectableTracksSelected) return new Set();
+      return new Set(selectableTracks.map((track) => track.id));
+    });
+  };
+
+  const clearTrackSelection = () => {
+    setSelectedTrackIds(new Set());
+  };
+
+  const stopCurrentPlayback = () => {
+    const audio = audioRef.current;
+    audio?.pause();
+    audio?.removeAttribute('src');
+    stopYouTubePlayer();
+    setCurrentTrack(null);
+    setPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+  };
+
   const addTrackToPlaylist = async (track: Track, playlist = playlistTarget) => {
     if (!user || !playlist) {
       setMessage('Cree ou rejoins une playlist avant d ajouter un titre.');
@@ -944,50 +1034,118 @@ export default function App() {
     await loadPlaylists(user);
   };
 
-  const deleteCloudTrack = async (track: Track) => {
-    if (!user || track.source !== 'cloud' || !track.storageKey) return;
-    const confirmed = window.confirm(`Supprimer "${track.title}" du Cloud ?`);
-    if (!confirmed) return;
+  const deleteCloudTracks = async (tracksToDelete: Track[], successMessage: string) => {
+    if (!user) return;
+    const cloudTracksToDelete = tracksToDelete.filter((track) => track.source === 'cloud' && track.storageKey);
+    if (!cloudTracksToDelete.length) return;
 
-    setCloudDeleteBusy((previous) => ({ ...previous, [track.id]: true }));
-    setMessage('');
-    try {
-      const { error } = await supabase.rpc('delete_cloud_track', {
-        target_storage_key: track.storageKey,
+    const deletedIds = new Set(cloudTracksToDelete.map((track) => track.id));
+    setCloudDeleteBusy((previous) => {
+      const next = { ...previous };
+      cloudTracksToDelete.forEach((track) => {
+        next[track.id] = true;
       });
-      if (error) throw error;
+      return next;
+    });
+    setMessage('');
 
-      let storageDeleteFailed = false;
-      try {
-        await deleteCloudTrackObject(track.storageKey);
-      } catch {
-        storageDeleteFailed = true;
+    let storageDeleteFailed = false;
+    try {
+      for (const track of cloudTracksToDelete) {
+        const { error } = await supabase.rpc('delete_cloud_track', {
+          target_storage_key: track.storageKey as string,
+        });
+        if (error) throw error;
+
+        try {
+          await deleteCloudTrackObject(track.storageKey as string);
+        } catch {
+          storageDeleteFailed = true;
+        }
       }
-      setCloudTracks((previous) => previous.filter((item) => item.id !== track.id));
-      setSavedTracks((previous) => previous.filter((item) => item.id !== track.id));
+
+      setCloudTracks((previous) => previous.filter((item) => !deletedIds.has(item.id)));
+      setSavedTracks((previous) => previous.filter((item) => !deletedIds.has(item.id)));
       setSavedIds((previous) => {
         const copy = new Set(previous);
-        copy.delete(track.id);
+        deletedIds.forEach((trackId) => copy.delete(trackId));
         return copy;
       });
-      if (currentTrack?.id === track.id) {
-        audioRef.current?.pause();
-        audioRef.current?.removeAttribute('src');
-        setCurrentTrack(null);
-        setPlaying(false);
-        setCurrentTime(0);
-        setDuration(0);
+      setSelectedTrackIds((previous) => {
+        const next = new Set(previous);
+        deletedIds.forEach((trackId) => next.delete(trackId));
+        return next;
+      });
+      if (currentTrack && deletedIds.has(currentTrack.id)) {
+        stopCurrentPlayback();
       }
       await loadCloudTracks(user);
       await loadSavedTracks(user);
       await loadPlaylists(user);
       setMessage(storageDeleteFailed
-        ? 'Musique supprimee de Flowify. Le fichier R2 peut rester dans le bucket.'
-        : 'Musique Cloud supprimee.');
+        ? 'Musique supprimee de Flowify. Un fichier R2 peut rester dans le bucket.'
+        : successMessage);
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
-      setCloudDeleteBusy((previous) => ({ ...previous, [track.id]: false }));
+      setCloudDeleteBusy((previous) => {
+        const next = { ...previous };
+        cloudTracksToDelete.forEach((track) => {
+          next[track.id] = false;
+        });
+        return next;
+      });
+    }
+  };
+
+  const deleteCloudTrack = async (track: Track) => {
+    if (!user || track.source !== 'cloud' || !track.storageKey) return;
+    const confirmed = window.confirm(`Supprimer "${track.title}" du Cloud ?`);
+    if (!confirmed) return;
+
+    await deleteCloudTracks([track], 'Musique Cloud supprimee.');
+  };
+
+  const deleteSelectedTracks = async () => {
+    if (!user || !selectedTracks.length) return;
+
+    if (view === 'cloud') {
+      const confirmed = window.confirm(`Supprimer ${selectedTracks.length} musique${selectedTracks.length > 1 ? 's' : ''} du Cloud ?`);
+      if (!confirmed) return;
+      await deleteCloudTracks(
+        selectedTracks,
+        `${selectedTracks.length} musique${selectedTracks.length > 1 ? 's' : ''} Cloud supprimee${selectedTracks.length > 1 ? 's' : ''}.`,
+      );
+      return;
+    }
+
+    if (view === 'playlists' && activePlaylist) {
+      const confirmed = window.confirm(`Retirer ${selectedTracks.length} titre${selectedTracks.length > 1 ? 's' : ''} de "${activePlaylist.name}" ?`);
+      if (!confirmed) return;
+
+      setPlaylistBusy(true);
+      setMessage('');
+      const removedIds = new Set(selectedTracks.map((track) => track.id));
+      try {
+        for (const track of selectedTracks) {
+          const { error } = await supabase.rpc('remove_track_from_playlist', {
+            target_playlist_id: activePlaylist.id,
+            target_youtube_id: track.id,
+          });
+          if (error) throw error;
+        }
+
+        if (currentTrack && removedIds.has(currentTrack.id)) {
+          stopCurrentPlayback();
+        }
+        setSelectedTrackIds(new Set());
+        await loadPlaylists(user);
+        setMessage(`${selectedTracks.length} titre${selectedTracks.length > 1 ? 's' : ''} retire${selectedTracks.length > 1 ? 's' : ''} de la playlist.`);
+      } catch (error) {
+        setMessage(errorMessage(error));
+      } finally {
+        setPlaylistBusy(false);
+      }
     }
   };
 
@@ -1722,6 +1880,11 @@ export default function App() {
                           >
                             {activePlaylistPlaying ? <Pause size={24} /> : <Play size={24} />}
                           </button>
+                          <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
+                            {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
+                            Upload Cloud
+                            <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFileToPlaylist} type="file" />
+                          </label>
                           {activePlaylist.ownerId === user.id && (
                             <label className={playlistBusy ? 'cover-upload-action disabled' : 'cover-upload-action'}>
                               <ImageIcon size={16} />
@@ -1746,9 +1909,44 @@ export default function App() {
                           )}
                         </div>
 
+                        {activePlaylist.tracks.length > 0 && (
+                          <div className="bulk-action-bar">
+                            <button className="muted-action" onClick={toggleSelectAllTracks} type="button">
+                              {allSelectableTracksSelected ? 'Tout deselectionner' : 'Tout selectionner'}
+                            </button>
+                            <span>{selectedTracks.length} selectionne{selectedTracks.length > 1 ? 's' : ''}</span>
+                            {selectedTracks.length > 0 && (
+                              <>
+                                <button className="muted-action" onClick={clearTrackSelection} type="button">
+                                  Annuler
+                                </button>
+                                <button className="danger-action" disabled={selectionDeleteBusy} onClick={deleteSelectedTracks} type="button">
+                                  <Trash2 size={16} />
+                                  Retirer
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+
                         <div className="playlist-track-list">
                           {activePlaylist.tracks.length ? activePlaylist.tracks.map((track, index) => (
-                            <article className={currentTrack?.id === track.id ? 'playlist-track-row active' : 'playlist-track-row'} key={`${track.id}-${index}`}>
+                            <article
+                              className={[
+                                'playlist-track-row',
+                                currentTrack?.id === track.id ? 'active' : '',
+                                selectedTrackIds.has(track.id) ? 'selected' : '',
+                              ].filter(Boolean).join(' ')}
+                              key={`${track.id}-${index}`}
+                            >
+                              <label className="playlist-row-select" aria-label={`Selectionner ${track.title}`}>
+                                <input
+                                  checked={selectedTrackIds.has(track.id)}
+                                  onChange={() => toggleTrackSelection(track)}
+                                  type="checkbox"
+                                />
+                                <span />
+                              </label>
                               <button className="playlist-row-cover" onClick={() => playTrack(track, activePlaylist.tracks, index)} type="button">
                                 {track.thumbnail ? <img src={track.thumbnail} alt="" loading="lazy" /> : <span />}
                                 <i>{currentTrack?.id === track.id && playing ? <Pause size={17} /> : <Play size={17} />}</i>
@@ -1790,6 +1988,25 @@ export default function App() {
                   </section>
                 ) : (
                   <>
+                    {view === 'cloud' && cloudTracks.length > 0 && (
+                      <div className="bulk-action-bar">
+                        <button className="muted-action" onClick={toggleSelectAllTracks} type="button">
+                          {allSelectableTracksSelected ? 'Tout deselectionner' : 'Tout selectionner'}
+                        </button>
+                        <span>{selectedTracks.length} selectionne{selectedTracks.length > 1 ? 's' : ''}</span>
+                        {selectedTracks.length > 0 && (
+                          <>
+                            <button className="muted-action" onClick={clearTrackSelection} type="button">
+                              Annuler
+                            </button>
+                            <button className="danger-action" disabled={selectionDeleteBusy} onClick={deleteSelectedTracks} type="button">
+                              <Trash2 size={16} />
+                              Supprimer
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                     <section className="track-grid">
                       {loading && !visibleTracks.length ? (
                         <div className="empty-state">
@@ -1798,7 +2015,24 @@ export default function App() {
                         </div>
                       ) : visibleTracks.length ? (
                         visibleTracks.map((track, index) => (
-                          <article className={currentTrack?.id === track.id ? 'track-card active' : 'track-card'} key={`${track.id}-${index}`}>
+                          <article
+                            className={[
+                              'track-card',
+                              currentTrack?.id === track.id ? 'active' : '',
+                              selectedTrackIds.has(track.id) ? 'selected' : '',
+                            ].filter(Boolean).join(' ')}
+                            key={`${track.id}-${index}`}
+                          >
+                            {view === 'cloud' && (
+                              <label className="track-select" aria-label={`Selectionner ${track.title}`}>
+                                <input
+                                  checked={selectedTrackIds.has(track.id)}
+                                  onChange={() => toggleTrackSelection(track)}
+                                  type="checkbox"
+                                />
+                                <span />
+                              </label>
+                            )}
                             <button className="cover-button" onClick={() => playTrack(track, visibleTracks, index)} type="button">
                               {track.thumbnail ? <img src={track.thumbnail} alt="" loading="lazy" /> : <span />}
                               <i>{currentTrack?.id === track.id && playing ? <Pause size={22} /> : <Play size={22} />}</i>
