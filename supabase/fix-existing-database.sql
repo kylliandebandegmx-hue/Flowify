@@ -124,6 +124,11 @@ select p.id, p.owner_id, 'owner'
 from public.playlists p
 on conflict (playlist_id, user_id) do update set role = 'owner';
 
+drop function if exists public.can_edit_playlist(uuid) cascade;
+drop function if exists public.can_access_playlist(uuid) cascade;
+drop function if exists public.is_playlist_member(uuid) cascade;
+drop function if exists public.is_playlist_owner(uuid) cascade;
+
 create or replace function public.is_playlist_owner(target_playlist_id uuid)
 returns boolean
 language sql

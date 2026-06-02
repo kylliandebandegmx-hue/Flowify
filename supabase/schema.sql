@@ -186,6 +186,11 @@ drop policy if exists "playlist tracks insertable through membership" on public.
 drop policy if exists "playlist tracks updatable through editors" on public.playlist_tracks;
 drop policy if exists "playlist tracks deletable through membership" on public.playlist_tracks;
 
+drop function if exists public.can_edit_playlist(uuid) cascade;
+drop function if exists public.can_access_playlist(uuid) cascade;
+drop function if exists public.is_playlist_member(uuid) cascade;
+drop function if exists public.is_playlist_owner(uuid) cascade;
+
 create or replace function public.is_playlist_owner(target_playlist_id uuid)
 returns boolean
 language sql
