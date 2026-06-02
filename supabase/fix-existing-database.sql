@@ -12,6 +12,9 @@ create table if not exists public.profiles (
 alter table public.playlists
   add column if not exists invite_code text;
 
+alter table public.playlists
+  add column if not exists cover_url text;
+
 create table if not exists public.cloud_tracks (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,

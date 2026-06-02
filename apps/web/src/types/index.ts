@@ -97,6 +97,7 @@ export interface PlaylistRow {
   owner_id: string;
   name: string;
   invite_code: string;
+  cover_url?: string | null;
   created_at: string;
   updated_at: string;
   playlist_tracks?: PlaylistTrackRow[];
@@ -108,6 +109,7 @@ export interface Playlist {
   ownerId: string;
   name: string;
   inviteCode: string;
+  coverUrl: string;
   tracks: Track[];
   members: PlaylistMember[];
   memberCount: number;

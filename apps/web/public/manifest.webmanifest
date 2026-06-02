@@ -6,8 +6,8 @@
   "scope": "./",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "browser"],
-  "background_color": "#08090d",
-  "theme_color": "#0a0b0f",
+  "background_color": "#050505",
+  "theme_color": "#9E43F0",
   "orientation": "portrait-primary",
   "categories": ["music", "entertainment"],
   "icons": [

@@ -62,6 +62,7 @@ create table if not exists public.playlists (
   owner_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   invite_code text not null unique default public.generate_playlist_invite_code(),
+  cover_url text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -110,6 +111,7 @@ create table if not exists public.playlist_tracks (
 );
 
 alter table public.playlists add column if not exists invite_code text;
+alter table public.playlists add column if not exists cover_url text;
 update public.playlists
 set invite_code = public.generate_playlist_invite_code()
 where invite_code is null;

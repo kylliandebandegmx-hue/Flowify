@@ -5,7 +5,6 @@ import {
   Copy,
   Download,
   Heart,
-  Home,
   Image as ImageIcon,
   ListMusic,
   Loader2,
@@ -26,6 +25,7 @@ import {
   Users,
   Volume2,
   X,
+  Youtube,
 } from 'lucide-react';
 import {
   ChangeEvent,
@@ -66,7 +66,7 @@ import type {
   Track,
 } from './types';
 
-type ViewMode = 'home' | 'search' | 'library' | 'cloud' | 'playlists' | 'settings';
+type ViewMode = 'home' | 'search' | 'cloud' | 'playlists' | 'settings';
 type AuthMode = 'signin' | 'signup';
 
 interface BeforeInstallPromptEvent extends Event {
@@ -185,15 +185,19 @@ export default function App() {
   );
 
   const visibleTracks =
-    view === 'library'
-      ? savedTracks
-      : view === 'cloud'
-        ? cloudTracks
+    view === 'cloud'
+      ? cloudTracks
       : view === 'playlists'
         ? activePlaylist?.tracks || []
         : tracks;
 
   const playlistTarget = activePlaylist || playlists[0] || null;
+  const activePlaylistIsCurrent = Boolean(
+    activePlaylist &&
+    currentTrack &&
+    activePlaylist.tracks.some((track) => track.id === currentTrack.id),
+  );
+  const activePlaylistPlaying = Boolean(activePlaylistIsCurrent && playing);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
@@ -361,12 +365,25 @@ export default function App() {
   }, []);
 
   const loadPlaylists = useCallback(async (_activeUser: User) => {
-    const { data, error } = await supabase
+    const playlistSelect =
+      'id, owner_id, name, invite_code, cover_url, created_at, updated_at, playlist_tracks(id, playlist_id, track, added_by, position, created_at), playlist_members(playlist_id, user_id, role, joined_at)';
+    const fallbackPlaylistSelect =
+      'id, owner_id, name, invite_code, created_at, updated_at, playlist_tracks(id, playlist_id, track, added_by, position, created_at), playlist_members(playlist_id, user_id, role, joined_at)';
+    const playlistResult = await supabase
       .from('playlists')
-      .select(
-        'id, owner_id, name, invite_code, created_at, updated_at, playlist_tracks(id, playlist_id, track, added_by, position, created_at), playlist_members(playlist_id, user_id, role, joined_at)',
-      )
+      .select(playlistSelect)
       .order('updated_at', { ascending: false });
+    let data = playlistResult.data as unknown[] | null;
+    let error = playlistResult.error;
+
+    if (error && error.message.includes('cover_url')) {
+      const fallbackResult = await supabase
+        .from('playlists')
+        .select(fallbackPlaylistSelect)
+        .order('updated_at', { ascending: false });
+      data = fallbackResult.data as unknown[] | null;
+      error = fallbackResult.error;
+    }
 
     if (error) {
       setMessage(error.message);
@@ -421,6 +438,7 @@ export default function App() {
         ownerId: row.owner_id,
         name: row.name,
         inviteCode: row.invite_code,
+        coverUrl: row.cover_url || '',
         members,
         memberCount: members.length || 1,
         createdAt: row.created_at,
@@ -624,49 +642,57 @@ export default function App() {
   };
 
   const uploadCloudFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] || null;
+    const files = Array.from(event.target.files || []);
     event.target.value = '';
-    if (!user || !file) return;
-    if (!file.type.startsWith('audio/')) {
+    if (!user || !files.length) return;
+
+    const audioFiles = files.filter((file) => file.type.startsWith('audio/'));
+    if (!audioFiles.length) {
       setMessage('Choisis un fichier audio.');
       return;
     }
 
     setCloudUploadBusy(true);
-    setMessage('Upload Cloud en cours...');
+    setMessage(audioFiles.length > 1 ? `Upload Cloud: 0/${audioFiles.length}` : 'Upload Cloud en cours...');
+    let uploadedCount = 0;
     try {
-      const uploaded = await uploadCloudTrack(file);
-      const track: Track = {
-        id: `cloud:${uploaded.key}`,
-        title: titleFromFile(uploaded.fileName || file.name),
-        channel: 'Cloud Flowify',
-        thumbnail: '',
-        duration: '',
-        viewCount: '',
-        publishedAt: new Date().toISOString(),
-        description: 'Musique importee dans Flowify Cloud',
-        source: 'cloud',
-        storageKey: uploaded.key,
-        fileName: uploaded.fileName || file.name,
-        contentType: uploaded.contentType || file.type,
-        sizeBytes: uploaded.sizeBytes || file.size,
-        url: uploaded.url || '',
-      };
+      for (const file of audioFiles) {
+        const uploaded = await uploadCloudTrack(file);
+        const track: Track = {
+          id: `cloud:${uploaded.key}`,
+          title: titleFromFile(uploaded.fileName || file.name),
+          channel: 'Cloud Flowify',
+          thumbnail: '',
+          duration: '',
+          viewCount: '',
+          publishedAt: new Date().toISOString(),
+          description: 'Musique importee dans Flowify Cloud',
+          source: 'cloud',
+          storageKey: uploaded.key,
+          fileName: uploaded.fileName || file.name,
+          contentType: uploaded.contentType || file.type,
+          sizeBytes: uploaded.sizeBytes || file.size,
+          url: uploaded.url || '',
+        };
 
-      const { error } = await supabase.from('cloud_tracks').insert({
-        user_id: user.id,
-        storage_key: uploaded.key,
-        title: track.title,
-        file_name: track.fileName,
-        content_type: track.contentType,
-        size_bytes: track.sizeBytes,
-        track,
-      });
-      if (error) throw error;
+        const { error } = await supabase.from('cloud_tracks').insert({
+          user_id: user.id,
+          storage_key: uploaded.key,
+          title: track.title,
+          file_name: track.fileName,
+          content_type: track.contentType,
+          size_bytes: track.sizeBytes,
+          track,
+        });
+        if (error) throw error;
+
+        uploadedCount += 1;
+        if (audioFiles.length > 1) setMessage(`Upload Cloud: ${uploadedCount}/${audioFiles.length}`);
+      }
 
       await loadCloudTracks(user);
       setView('cloud');
-      setMessage('Musique ajoutee au Cloud.');
+      setMessage(uploadedCount > 1 ? `${uploadedCount} musiques ajoutees au Cloud.` : 'Musique ajoutee au Cloud.');
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -745,6 +771,43 @@ export default function App() {
     reader.onload = () => {
       if (typeof reader.result === 'string') {
         setProfileAvatarUrl(reader.result);
+      }
+    };
+    reader.onerror = () => setMessage('Impossible de charger cette image.');
+    reader.readAsDataURL(file);
+  };
+
+  const selectPlaylistCover = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!user || !activePlaylist || activePlaylist.ownerId !== user.id || !file) return;
+    if (!file.type.startsWith('image/')) {
+      setMessage('Choisis une image pour la playlist.');
+      return;
+    }
+    if (file.size > 900_000) {
+      setMessage('Image trop lourde. Choisis moins de 900 Ko.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      if (typeof reader.result !== 'string') return;
+      setPlaylistBusy(true);
+      setMessage('');
+      try {
+        const { error } = await supabase
+          .from('playlists')
+          .update({ cover_url: reader.result })
+          .eq('id', activePlaylist.id)
+          .eq('owner_id', user.id);
+        if (error) throw error;
+        await loadPlaylists(user);
+        setMessage('Photo de playlist sauvegardee.');
+      } catch (error) {
+        setMessage(errorMessage(error));
+      } finally {
+        setPlaylistBusy(false);
       }
     };
     reader.onerror = () => setMessage('Impossible de charger cette image.');
@@ -1168,12 +1231,11 @@ export default function App() {
   }, [hasFlowifyApi, hasYoutubeKey, health, healthLoading]);
 
   const heading = useMemo(() => {
-    if (view === 'library') return 'Titres sauvegardes';
     if (view === 'cloud') return 'Cloud';
     if (view === 'playlists') return activePlaylist?.name || 'Playlists';
     if (view === 'settings') return 'Parametres';
     if (view === 'search') return 'Recherche';
-    return 'Flowify';
+    return 'YouTube';
   }, [activePlaylist?.name, view]);
 
   return (
@@ -1221,7 +1283,7 @@ export default function App() {
       <aside className={sidebarOpen ? 'sidebar open' : 'sidebar'}>
         <div className="sidebar-head">
           <div className="brand">
-            <img src={`${import.meta.env.BASE_URL}flowify-logo.svg`} alt="Flowify" />
+            <img src={`${import.meta.env.BASE_URL}flowify-logo.png`} alt="Flowify" />
           </div>
           {user && (
             <button className="sidebar-close" aria-label="Fermer le menu" onClick={() => setSidebarOpen(false)} type="button">
@@ -1232,6 +1294,20 @@ export default function App() {
 
         {user && (
           <>
+            <div className="account-panel sidebar-account">
+              <div className="account-profile">
+                <ProfileAvatar
+                  avatarUrl={profile?.avatar_url}
+                  className="account-avatar"
+                  label={profile?.display_name || user.email || 'Flowify'}
+                />
+                <div>
+                  <strong>{profile?.display_name || displayNameFromEmail(user.email) || 'Flowify'}</strong>
+                  <span>{user.email}</span>
+                </div>
+              </div>
+            </div>
+
             <form className="search-box" onSubmit={submitSearch}>
               <Search size={18} />
               <input
@@ -1246,13 +1322,8 @@ export default function App() {
 
             <nav className="nav-list">
               <button className={view === 'home' ? 'active' : ''} onClick={openTrending} type="button">
-                <Home size={18} />
-                Tendances
-              </button>
-              <button className={view === 'library' ? 'active' : ''} onClick={() => openView('library')} type="button">
-                <Heart size={18} />
-                Bibliotheque
-                <span>{savedTracks.length}</span>
+                <Youtube size={18} />
+                YouTube
               </button>
               <button className={view === 'cloud' ? 'active' : ''} onClick={() => openView('cloud')} type="button">
                 <Cloud size={18} />
@@ -1264,10 +1335,6 @@ export default function App() {
                 Playlists
                 <span>{playlists.length}</span>
               </button>
-              <button className={view === 'settings' ? 'active' : ''} onClick={() => openView('settings')} type="button">
-                <Settings size={18} />
-                Parametres
-              </button>
             </nav>
 
             <section className="sidebar-section">
@@ -1275,26 +1342,32 @@ export default function App() {
                 <ListMusic size={16} />
                 Playlists
               </div>
-              <form className="side-form" onSubmit={createPlaylist}>
-                <input
-                  value={newPlaylistName}
-                  onChange={(event) => setNewPlaylistName(event.target.value)}
-                  placeholder="Nouvelle playlist"
-                />
-                <button aria-label="Creer" disabled={playlistBusy || !newPlaylistName.trim()} type="submit">
-                  <Plus size={16} />
-                </button>
-              </form>
-              <form className="side-form" onSubmit={joinPlaylist}>
-                <input
-                  value={joinCode}
-                  onChange={(event) => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
-                  placeholder="Code invitation"
-                />
-                <button aria-label="Rejoindre" disabled={playlistBusy || !joinCode.trim()} type="submit">
-                  <UserPlus size={16} />
-                </button>
-              </form>
+              <div className="side-form-group">
+                <span>Nouvelle playlist</span>
+                <form className="side-form" onSubmit={createPlaylist}>
+                  <input
+                    value={newPlaylistName}
+                    onChange={(event) => setNewPlaylistName(event.target.value)}
+                    placeholder="Nom"
+                  />
+                  <button aria-label="Creer" disabled={playlistBusy || !newPlaylistName.trim()} type="submit">
+                    <Plus size={16} />
+                  </button>
+                </form>
+              </div>
+              <div className="side-form-group">
+                <span>Code d'invitation</span>
+                <form className="side-form" onSubmit={joinPlaylist}>
+                  <input
+                    value={joinCode}
+                    onChange={(event) => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                    placeholder="Ex: A1B2C3"
+                  />
+                  <button aria-label="Rejoindre" disabled={playlistBusy || !joinCode.trim()} type="submit">
+                    <UserPlus size={16} />
+                  </button>
+                </form>
+              </div>
               <div className="playlist-stack">
                 {playlists.map((playlist) => (
                   <button
@@ -1312,37 +1385,31 @@ export default function App() {
           </>
         )}
 
-        <div className="status-panel">
-          <div>
-            <Server size={18} />
-            <span>{statusLabel}</span>
-          </div>
-          <button onClick={refreshHealth} type="button">
-            <Cloud size={16} />
-          </button>
-        </div>
-
-        <div className="account-panel">
+        <div className="sidebar-bottom">
           {user ? (
             <>
-              <div className="account-profile">
-                <ProfileAvatar
-                  avatarUrl={profile?.avatar_url}
-                  className="account-avatar"
-                  label={profile?.display_name || user.email || 'Flowify'}
-                />
+              <button className={view === 'settings' ? 'settings-bottom-button active' : 'settings-bottom-button'} onClick={() => openView('settings')} type="button">
+                <Settings size={18} />
+                Parametres
+              </button>
+              <div className="status-panel">
                 <div>
-                  <strong>{profile?.display_name || displayNameFromEmail(user.email) || 'Flowify'}</strong>
-                  <span>{user.email}</span>
-                  <span>{standalone ? 'PWA installe' : 'PWA web'}</span>
+                  <Server size={18} />
+                  <span>{statusLabel}</span>
                 </div>
+                <button onClick={refreshHealth} type="button">
+                  <Cloud size={16} />
+                </button>
               </div>
-              <button aria-label="Se deconnecter" onClick={signOut} type="button">
+              <button className="logout-button" onClick={signOut} type="button">
                 <LogOut size={18} />
+                Deconnexion
               </button>
             </>
           ) : (
-            <span>Connexion requise</span>
+            <div className="account-panel">
+              <span>Connexion requise</span>
+            </div>
           )}
         </div>
       </aside>
@@ -1376,7 +1443,7 @@ export default function App() {
           <>
             <header className={view === 'playlists' ? 'topbar playlist-topbar' : 'topbar'}>
               <div>
-                <p>{view === 'home' ? 'Tendances France' : view}</p>
+                <p>{view === 'home' ? 'YouTube' : view}</p>
                 <h1>{heading}</h1>
               </div>
               <div className="top-actions">
@@ -1384,7 +1451,7 @@ export default function App() {
                   <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
                     {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
                     Upload
-                    <input accept="audio/*" disabled={cloudUploadBusy} onChange={uploadCloudFile} type="file" />
+                    <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFile} type="file" />
                   </label>
                 )}
                 {view === 'playlists' && activePlaylist && (
@@ -1564,9 +1631,27 @@ export default function App() {
                         </div>
 
                         <div className="playlist-command-bar">
-                          <button className="playlist-play" disabled={!activePlaylist.tracks.length} onClick={() => playTrack(activePlaylist.tracks[0], activePlaylist.tracks, 0)} type="button">
-                            <Play size={24} />
+                          <button
+                            className={activePlaylistPlaying ? 'playlist-play active' : 'playlist-play'}
+                            disabled={!activePlaylist.tracks.length}
+                            onClick={() => {
+                              if (activePlaylistIsCurrent) {
+                                void togglePlay();
+                              } else {
+                                void playTrack(activePlaylist.tracks[0], activePlaylist.tracks, 0);
+                              }
+                            }}
+                            type="button"
+                          >
+                            {activePlaylistPlaying ? <Pause size={24} /> : <Play size={24} />}
                           </button>
+                          {activePlaylist.ownerId === user.id && (
+                            <label className={playlistBusy ? 'cover-upload-action disabled' : 'cover-upload-action'}>
+                              <ImageIcon size={16} />
+                              {activePlaylist.coverUrl ? 'Changer photo' : 'Photo playlist'}
+                              <input accept="image/*" disabled={playlistBusy} onChange={selectPlaylistCover} type="file" />
+                            </label>
+                          )}
                           <button className="code-pill" onClick={() => copyInviteCode(activePlaylist)} type="button">
                             <Copy size={16} />
                             {activePlaylist.inviteCode}
@@ -1833,11 +1918,19 @@ function ProfileAvatar({
 }
 
 function PlaylistCover({ playlist }: { playlist: Playlist }) {
+  if (playlist.coverUrl) {
+    return (
+      <div className="playlist-cover-art single">
+        <img src={playlist.coverUrl} alt="" loading="lazy" />
+      </div>
+    );
+  }
+
   const covers = playlist.tracks.filter((track) => track.thumbnail).slice(0, 4);
   if (!covers.length) {
     return (
       <div className="playlist-cover-art fallback">
-        <img src={`${import.meta.env.BASE_URL}flowify-logo.svg`} alt="" />
+        <img src={`${import.meta.env.BASE_URL}flowify-logo.png`} alt="" />
       </div>
     );
   }
@@ -1863,7 +1956,7 @@ function AddedByLine({ track }: { track: Track }) {
 }
 
 function playlistHeroImage(playlist: Playlist) {
-  return playlist.tracks.find((track) => track.thumbnail)?.thumbnail || '';
+  return playlist.coverUrl || playlist.tracks.find((track) => track.thumbnail)?.thumbnail || '';
 }
 
 function profileToPlaylistMember(userId: string, profile?: Profile): PlaylistMember {
@@ -1941,6 +2034,9 @@ function errorMessage(error: unknown) {
   }
   if (message.includes("Could not find the 'invite_code' column")) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (message.includes("Could not find the 'cover_url' column") || message.includes('playlists.cover_url')) {
+    return 'Base Supabase pas a jour: ajoute la colonne cover_url aux playlists avec supabase/fix-existing-database.sql.';
   }
   if (message.includes("Could not find the table 'public.saved_tracks'")) {
     return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
