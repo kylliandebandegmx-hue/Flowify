@@ -77,16 +77,19 @@ export interface PlaylistTrackRow {
   created_at: string;
 }
 
+export type PlaylistRole = 'owner' | 'editor' | 'listener';
+export type PlaylistMemberRowRole = PlaylistRole | 'member';
+
 export interface PlaylistMemberRow {
   playlist_id: string;
   user_id: string;
-  role: 'owner' | 'member';
+  role: PlaylistMemberRowRole;
   joined_at?: string;
 }
 
 export interface PlaylistMember {
   userId: string;
-  role: 'owner' | 'member';
+  role: PlaylistRole;
   displayName: string;
   avatarUrl: string;
   joinedAt?: string;

@@ -1,26 +1,34 @@
 import type { Session, User } from '@supabase/supabase-js';
 import {
+  Check,
   CircleAlert,
   Cloud,
   Copy,
   Download,
   Heart,
   Image as ImageIcon,
+  KeyRound,
   ListMusic,
+  ListChecks,
   Loader2,
   LogIn,
   LogOut,
   Menu,
   Pause,
+  Pencil,
   Play,
   Plus,
+  Repeat,
   Search,
   Server,
   Settings,
+  Shield,
+  Shuffle,
   SkipBack,
   SkipForward,
   Sparkles,
   Trash2,
+  UserMinus,
   UserPlus,
   Volume2,
   X,
@@ -59,6 +67,7 @@ import type {
   CloudTrackRow,
   Playlist,
   PlaylistMember,
+  PlaylistRole,
   PlaylistRow,
   Profile,
   SavedTrackRow,
@@ -66,7 +75,8 @@ import type {
 } from './types';
 
 type ViewMode = 'home' | 'search' | 'cloud' | 'playlists' | 'settings';
-type AuthMode = 'signin' | 'signup';
+type AuthMode = 'signin' | 'signup' | 'reset';
+type TrackSelectionMode = 'cloud' | 'playlist' | null;
 
 const THEME_PRIMARY_KEY = 'flowify.theme.primary';
 const THEME_SECONDARY_KEY = 'flowify.theme.secondary';
@@ -140,6 +150,9 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   const [query, setQuery] = useState('');
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -152,6 +165,8 @@ export default function App() {
   const [profileAvatarUrl, setProfileAvatarUrl] = useState('');
   const [profileBusy, setProfileBusy] = useState(false);
   const [activePlaylistId, setActivePlaylistId] = useState('');
+  const [playlistNameDraft, setPlaylistNameDraft] = useState('');
+  const [playlistNameEditing, setPlaylistNameEditing] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
@@ -173,6 +188,8 @@ export default function App() {
   const [queueIndex, setQueueIndex] = useState(-1);
   const [youtubeVideoId, setYoutubeVideoId] = useState('');
   const [playing, setPlaying] = useState(false);
+  const [shuffleEnabled, setShuffleEnabled] = useState(false);
+  const [repeatEnabled, setRepeatEnabled] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [volume, setVolume] = useState(() => getInitialVolume());
@@ -181,6 +198,7 @@ export default function App() {
   const [cloudDeleteBusy, setCloudDeleteBusy] = useState<Record<string, boolean>>({});
   const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
   const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState<TrackSelectionMode>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -190,6 +208,13 @@ export default function App() {
     () => playlists.find((playlist) => playlist.id === activePlaylistId) || null,
     [activePlaylistId, playlists],
   );
+  const canEditPlaylist = useCallback((playlist: Playlist | null | undefined) => {
+    if (!user || !playlist) return false;
+    if (playlist.ownerId === user.id) return true;
+    return playlist.members.some((member) => member.userId === user.id && member.role === 'editor');
+  }, [user]);
+  const activePlaylistCanManage = Boolean(user && activePlaylist?.ownerId === user.id);
+  const activePlaylistCanEdit = canEditPlaylist(activePlaylist);
 
   const visibleTracks =
     view === 'cloud'
@@ -198,13 +223,16 @@ export default function App() {
         ? activePlaylist?.tracks || []
         : tracks;
 
-  const playlistTarget = activePlaylist || playlists[0] || null;
+  const playlistTarget = activePlaylist || playlists.find((playlist) => canEditPlaylist(playlist)) || playlists[0] || null;
+  const playlistTargetCanEdit = canEditPlaylist(playlistTarget);
   const activePlaylistIsCurrent = Boolean(
     activePlaylist &&
     currentTrack &&
     activePlaylist.tracks.some((track) => track.id === currentTrack.id),
   );
   const activePlaylistPlaying = Boolean(activePlaylistIsCurrent && playing);
+  const currentSelectionMode = view === 'cloud' ? 'cloud' : view === 'playlists' ? 'playlist' : null;
+  const selectionActive = Boolean(currentSelectionMode && selectionMode === currentSelectionMode);
   const selectableTracks = useMemo(() => {
     if (view === 'cloud') return cloudTracks;
     if (view === 'playlists') return activePlaylist?.tracks || [];
@@ -219,8 +247,13 @@ export default function App() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true);
+        setView('settings');
+        setMessage('Choisis un nouveau mot de passe dans Parametres.');
+      }
     });
     return () => data.subscription.unsubscribe();
   }, []);
@@ -231,7 +264,13 @@ export default function App() {
 
   useEffect(() => {
     setSelectedTrackIds(new Set());
+    setSelectionMode(null);
   }, [activePlaylistId, view]);
+
+  useEffect(() => {
+    setPlaylistNameDraft(activePlaylist?.name || '');
+    setPlaylistNameEditing(false);
+  }, [activePlaylist?.id, activePlaylist?.name]);
 
   useEffect(() => {
     setSelectedTrackIds((previous) => {
@@ -262,6 +301,54 @@ export default function App() {
     if (!user) return;
     loadYouTubeIframeApi().catch(() => undefined);
   }, [user]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+    } catch {
+      undefined;
+    }
+  }, [playing]);
+
+  useEffect(() => {
+    if (!currentTrack || !('mediaSession' in navigator)) return;
+    const artwork = currentTrack.thumbnail
+      ? [{ src: currentTrack.thumbnail, sizes: '512x512', type: 'image/png' }]
+      : [{ src: `${window.location.origin}${import.meta.env.BASE_URL}flowify-icon-512.png`, sizes: '512x512', type: 'image/png' }];
+
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.channel || 'Flowify',
+        album: 'Flowify',
+        artwork,
+      });
+    } catch {
+      undefined;
+    }
+  }, [currentTrack]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    const sessionApi = navigator.mediaSession;
+    const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
+      play: () => { void togglePlay(); },
+      pause: () => { void togglePlay(); },
+      previoustrack: () => playOffset(-1),
+      nexttrack: () => playOffset(1),
+      seekbackward: () => seekCurrentTrack(Math.max(0, currentTime - 10)),
+      seekforward: () => seekCurrentTrack(Math.min(duration || currentTime + 10, currentTime + 10)),
+    };
+
+    (Object.keys(handlers) as MediaSessionAction[]).forEach((action) => {
+      try {
+        sessionApi.setActionHandler(action, handlers[action] || null);
+      } catch {
+        undefined;
+      }
+    });
+  });
 
   useEffect(() => () => {
     if (youtubeProgressTimerRef.current) {
@@ -453,14 +540,15 @@ export default function App() {
         ...rawMembers,
       ].map((member) => {
         const memberProfile = profilesById.get(member.user_id);
+        const memberRole = normalizePlaylistRole(member.role);
         const displayName =
           memberProfile?.display_name ||
           displayNameFromEmail(memberProfile?.email) ||
-          (member.role === 'owner' ? 'Createur' : 'Membre');
+          (memberRole === 'owner' ? 'Createur' : 'Membre');
 
         return {
           userId: member.user_id,
-          role: member.role,
+          role: memberRole,
           displayName,
           avatarUrl: memberProfile?.avatar_url || '',
           joinedAt: member.joined_at,
@@ -544,26 +632,73 @@ export default function App() {
 
   const submitAuth = async (event: FormEvent) => {
     event.preventDefault();
+    const cleanEmail = email.trim();
+    if (!cleanEmail) return;
+
     setAuthBusy(true);
     setMessage('');
     try {
-      const result =
-        authMode === 'signin'
-          ? await supabase.auth.signInWithPassword({ email, password })
-          : await supabase.auth.signUp({ email, password });
+      if (authMode === 'reset') {
+        const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+          redirectTo: getAuthRedirectUrl(),
+        });
+        if (error) throw error;
+        setMessage('Email de reinitialisation envoye.');
+        return;
+      }
+
+      if (!password) return;
+
+      const result = authMode === 'signin'
+        ? await supabase.auth.signInWithPassword({ email: cleanEmail, password })
+        : await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: { display_name: displayNameFromEmail(cleanEmail) },
+            emailRedirectTo: getAuthRedirectUrl(),
+          },
+        });
 
       if (result.error) throw result.error;
       if (authMode === 'signup' && result.data.user) {
-        await supabase.from('profiles').upsert({
-          id: result.data.user.id,
-          email,
-          display_name: email.split('@')[0],
-        });
+        if (result.data.session) {
+          await supabase.from('profiles').upsert({
+            id: result.data.user.id,
+            email: cleanEmail,
+            display_name: displayNameFromEmail(cleanEmail),
+          });
+        }
+        setMessage(result.data.session
+          ? 'Compte cree.'
+          : 'Compte cree. Verifie tes emails si Supabase demande une confirmation.');
       }
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
       setAuthBusy(false);
+    }
+  };
+
+  const updatePassword = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      setMessage('Le nouveau mot de passe doit faire au moins 6 caracteres.');
+      return;
+    }
+
+    setPasswordBusy(true);
+    setMessage('');
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      setNewPassword('');
+      setPasswordRecovery(false);
+      setMessage('Mot de passe mis a jour.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPasswordBusy(false);
     }
   };
 
@@ -576,6 +711,8 @@ export default function App() {
     setProfile(null);
     setProfileDisplayName('');
     setProfileAvatarUrl('');
+    setPasswordRecovery(false);
+    setNewPassword('');
     setTracks([]);
     queueRef.current = [];
     queueIndexRef.current = -1;
@@ -766,6 +903,10 @@ export default function App() {
   const uploadCloudFileToPlaylist = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []);
     event.target.value = '';
+    if (!activePlaylistCanEdit) {
+      setMessage('Permission editeur requise pour ajouter des musiques.');
+      return;
+    }
     await uploadCloudFiles(files, activePlaylist);
   };
 
@@ -962,6 +1103,82 @@ export default function App() {
     }
   };
 
+  const renamePlaylist = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!user || !activePlaylist || activePlaylist.ownerId !== user.id) return;
+    const cleanName = playlistNameDraft.trim();
+    if (!cleanName) {
+      setMessage('Nom de playlist manquant.');
+      return;
+    }
+    if (cleanName === activePlaylist.name) {
+      setPlaylistNameEditing(false);
+      return;
+    }
+
+    setPlaylistBusy(true);
+    setMessage('');
+    try {
+      const { error } = await supabase.rpc('update_playlist_name', {
+        target_playlist_id: activePlaylist.id,
+        next_name: cleanName,
+      });
+      if (error) throw error;
+      setPlaylistNameEditing(false);
+      await loadPlaylists(user);
+      setMessage('Playlist renommee.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPlaylistBusy(false);
+    }
+  };
+
+  const updatePlaylistMemberRole = async (member: PlaylistMember, role: PlaylistRole) => {
+    if (!user || !activePlaylist || activePlaylist.ownerId !== user.id || member.role === 'owner') return;
+
+    setPlaylistBusy(true);
+    setMessage('');
+    try {
+      const { error } = await supabase.rpc('update_playlist_member_role', {
+        target_playlist_id: activePlaylist.id,
+        target_user_id: member.userId,
+        next_role: role,
+      });
+      if (error) throw error;
+      await loadPlaylists(user);
+      setMessage('Permission mise a jour.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPlaylistBusy(false);
+    }
+  };
+
+  const removePlaylistMember = async (member: PlaylistMember) => {
+    if (!user || !activePlaylist || member.role === 'owner') return;
+    if (activePlaylist.ownerId !== user.id && member.userId !== user.id) return;
+    const confirmed = window.confirm(`Retirer ${member.displayName} de "${activePlaylist.name}" ?`);
+    if (!confirmed) return;
+
+    setPlaylistBusy(true);
+    setMessage('');
+    try {
+      const { error } = await supabase.rpc('remove_playlist_member', {
+        target_playlist_id: activePlaylist.id,
+        target_user_id: member.userId,
+      });
+      if (error) throw error;
+      if (member.userId === user.id) setActivePlaylistId('');
+      await loadPlaylists(user);
+      setMessage('Membre retire.');
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setPlaylistBusy(false);
+    }
+  };
+
   const toggleTrackSelection = (track: Track) => {
     setSelectedTrackIds((previous) => {
       const next = new Set(previous);
@@ -980,6 +1197,12 @@ export default function App() {
 
   const clearTrackSelection = () => {
     setSelectedTrackIds(new Set());
+    setSelectionMode(null);
+  };
+
+  const startTrackSelection = (mode: Exclude<TrackSelectionMode, null>) => {
+    setSelectedTrackIds(new Set());
+    setSelectionMode(mode);
   };
 
   const stopCurrentPlayback = () => {
@@ -996,6 +1219,10 @@ export default function App() {
   const addTrackToPlaylist = async (track: Track, playlist = playlistTarget) => {
     if (!user || !playlist) {
       setMessage('Cree ou rejoins une playlist avant d ajouter un titre.');
+      return;
+    }
+    if (!canEditPlaylist(playlist)) {
+      setMessage('Permission editeur requise pour ajouter des titres.');
       return;
     }
 
@@ -1021,6 +1248,10 @@ export default function App() {
 
   const removeTrackFromPlaylist = async (track: Track) => {
     if (!user || !activePlaylist) return;
+    if (!activePlaylistCanEdit) {
+      setMessage('Permission editeur requise pour retirer des titres.');
+      return;
+    }
 
     const { error } = await supabase.rpc('remove_track_from_playlist', {
       target_playlist_id: activePlaylist.id,
@@ -1116,10 +1347,15 @@ export default function App() {
         selectedTracks,
         `${selectedTracks.length} musique${selectedTracks.length > 1 ? 's' : ''} Cloud supprimee${selectedTracks.length > 1 ? 's' : ''}.`,
       );
+      setSelectionMode(null);
       return;
     }
 
     if (view === 'playlists' && activePlaylist) {
+      if (!activePlaylistCanEdit) {
+        setMessage('Permission editeur requise pour retirer des titres.');
+        return;
+      }
       const confirmed = window.confirm(`Retirer ${selectedTracks.length} titre${selectedTracks.length > 1 ? 's' : ''} de "${activePlaylist.name}" ?`);
       if (!confirmed) return;
 
@@ -1139,6 +1375,7 @@ export default function App() {
           stopCurrentPlayback();
         }
         setSelectedTrackIds(new Set());
+        setSelectionMode(null);
         await loadPlaylists(user);
         setMessage(`${selectedTracks.length} titre${selectedTracks.length > 1 ? 's' : ''} retire${selectedTracks.length > 1 ? 's' : ''} de la playlist.`);
       } catch (error) {
@@ -1228,7 +1465,11 @@ export default function App() {
             if (event.data === api.PlayerState.ENDED) {
               setPlaying(false);
               stopYouTubeProgress();
-              playOffset(1);
+              if (repeatEnabled && currentTrack) {
+                void playTrack(currentTrack, queueRef.current, queueIndexRef.current);
+              } else {
+                playOffset(1);
+              }
             }
           },
         },
@@ -1314,6 +1555,19 @@ export default function App() {
     }
   };
 
+  const seekCurrentTrack = (nextTime: number) => {
+    try {
+      if (currentTrack?.source !== 'cloud') {
+        youtubePlayerRef.current?.seekTo(nextTime, true);
+      } else if (audioRef.current) {
+        audioRef.current.currentTime = nextTime;
+      }
+    } catch {
+      setMessage('Deplacement indisponible pendant le chargement.');
+    }
+    setCurrentTime(nextTime);
+  };
+
   const togglePlay = async () => {
     const audio = audioRef.current;
     if (!currentTrack) return;
@@ -1345,7 +1599,14 @@ export default function App() {
     const activeQueue = queueRef.current.length ? queueRef.current : queue;
     const activeIndex = queueRef.current.length ? queueIndexRef.current : queueIndex;
     if (!activeQueue.length) return;
-    const nextIndex = activeIndex + offset;
+    let nextIndex = activeIndex + offset;
+    if (shuffleEnabled && offset > 0 && activeQueue.length > 1) {
+      do {
+        nextIndex = Math.floor(Math.random() * activeQueue.length);
+      } while (nextIndex === activeIndex);
+    }
+    if (nextIndex < 0) nextIndex = repeatEnabled ? activeQueue.length - 1 : -1;
+    if (nextIndex >= activeQueue.length) nextIndex = repeatEnabled ? 0 : activeQueue.length;
     if (nextIndex < 0 || nextIndex >= activeQueue.length) return;
     playTrack(activeQueue[nextIndex], activeQueue, nextIndex);
   };
@@ -1439,7 +1700,11 @@ export default function App() {
         }}
         onEnded={() => {
           setPlaying(false);
-          playOffset(1);
+          if (repeatEnabled && currentTrack) {
+            void playTrack(currentTrack, queueRef.current, queueIndexRef.current);
+          } else {
+            playOffset(1);
+          }
         }}
         onError={(event) => {
           setPlaying(false);
@@ -1602,18 +1867,30 @@ export default function App() {
                   Email
                   <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" />
                 </label>
-                <label>
-                  Mot de passe
-                  <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" />
-                </label>
-                <button disabled={authBusy || !email || !password} type="submit">
-                  {authBusy ? <Loader2 className="spin" size={18} /> : <LogIn size={18} />}
-                  {authMode === 'signin' ? 'Connexion' : 'Creer un compte'}
+                {authMode !== 'reset' && (
+                  <label>
+                    Mot de passe
+                    <input
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      type="password"
+                      autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'}
+                    />
+                  </label>
+                )}
+                <button disabled={authBusy || !email.trim() || (authMode !== 'reset' && !password)} type="submit">
+                  {authBusy ? <Loader2 className="spin" size={18} /> : authMode === 'reset' ? <KeyRound size={18} /> : <LogIn size={18} />}
+                  {authMode === 'signin' ? 'Connexion' : authMode === 'signup' ? 'Creer un compte' : 'Envoyer le lien'}
                 </button>
               </form>
-              <button className="link-button" onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')} type="button">
-                {authMode === 'signin' ? 'Creer un compte' : 'J ai deja un compte'}
-              </button>
+              <div className="auth-links">
+                <button className="link-button" onClick={() => setAuthMode(authMode === 'signup' ? 'signin' : 'signup')} type="button">
+                  {authMode === 'signup' ? 'J ai deja un compte' : 'Creer un compte'}
+                </button>
+                <button className="link-button" onClick={() => setAuthMode(authMode === 'reset' ? 'signin' : 'reset')} type="button">
+                  {authMode === 'reset' ? 'Retour connexion' : 'Mot de passe oublie'}
+                </button>
+              </div>
             </div>
           </section>
         ) : (
@@ -1625,11 +1902,19 @@ export default function App() {
               </div>
               <div className="top-actions">
                 {view === 'cloud' && (
-                  <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
-                    {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
-                    Upload
-                    <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFile} type="file" />
-                  </label>
+                  <>
+                    <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
+                      {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
+                      Upload
+                      <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFile} type="file" />
+                    </label>
+                    {cloudTracks.length > 0 && (
+                      <button className="danger-action top-danger-action" onClick={() => startTrackSelection('cloud')} type="button">
+                        <ListChecks size={18} />
+                        Supprimer
+                      </button>
+                    )}
+                  </>
                 )}
                 {view === 'playlists' && activePlaylist && (
                   <button onClick={() => copyInviteCode(activePlaylist)} type="button">
@@ -1795,6 +2080,24 @@ export default function App() {
                     Deconnexion
                   </button>
                 </article>
+                <form className={passwordRecovery ? 'settings-card password-card attention' : 'settings-card password-card'} onSubmit={updatePassword}>
+                  <h2>Mot de passe</h2>
+                  <label>
+                    Nouveau mot de passe
+                    <input
+                      value={newPassword}
+                      onChange={(event) => setNewPassword(event.target.value)}
+                      placeholder="6 caracteres minimum"
+                      type="password"
+                      autoComplete="new-password"
+                    />
+                  </label>
+                  <button className="code-pill" disabled={passwordBusy || newPassword.length < 6} type="submit">
+                    {passwordBusy ? <Loader2 className="spin" size={16} /> : <KeyRound size={16} />}
+                    Mettre a jour
+                  </button>
+                  {passwordRecovery && <span>Lien de reinitialisation detecte.</span>}
+                </form>
                 <article className="settings-card">
                   <h2>Android APK</h2>
                   <p>Le workflow GitHub genere un APK debug a chaque push.</p>
@@ -1845,7 +2148,34 @@ export default function App() {
                           )}
                           <PlaylistCover playlist={activePlaylist} />
                           <div className="playlist-hero-copy">
-                            <h2>{activePlaylist.name}</h2>
+                            {playlistNameEditing ? (
+                              <form className="playlist-title-form" onSubmit={renamePlaylist}>
+                                <input
+                                  value={playlistNameDraft}
+                                  onChange={(event) => setPlaylistNameDraft(event.target.value)}
+                                  maxLength={80}
+                                  autoFocus
+                                />
+                                <button aria-label="Sauvegarder le nom" disabled={playlistBusy || !playlistNameDraft.trim()} type="submit">
+                                  <Check size={18} />
+                                </button>
+                                <button aria-label="Annuler" onClick={() => {
+                                  setPlaylistNameDraft(activePlaylist.name);
+                                  setPlaylistNameEditing(false);
+                                }} type="button">
+                                  <X size={18} />
+                                </button>
+                              </form>
+                            ) : (
+                              <div className="playlist-title-row">
+                                <h2>{activePlaylist.name}</h2>
+                                {activePlaylistCanManage && (
+                                  <button aria-label="Renommer la playlist" onClick={() => setPlaylistNameEditing(true)} type="button">
+                                    <Pencil size={18} />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             <p>
                               {activePlaylist.tracks.length} titre{activePlaylist.tracks.length > 1 ? 's' : ''} - {activePlaylist.memberCount} membre{activePlaylist.memberCount > 1 ? 's' : ''}
                             </p>
@@ -1880,12 +2210,14 @@ export default function App() {
                           >
                             {activePlaylistPlaying ? <Pause size={24} /> : <Play size={24} />}
                           </button>
-                          <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
-                            {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
-                            Upload Cloud
-                            <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFileToPlaylist} type="file" />
-                          </label>
-                          {activePlaylist.ownerId === user.id && (
+                          {activePlaylistCanEdit && (
+                            <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
+                              {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
+                              Upload Cloud
+                              <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFileToPlaylist} type="file" />
+                            </label>
+                          )}
+                          {activePlaylistCanManage && (
                             <label className={playlistBusy ? 'cover-upload-action disabled' : 'cover-upload-action'}>
                               <ImageIcon size={16} />
                               {activePlaylist.coverUrl ? 'Changer photo' : 'Photo playlist'}
@@ -1896,7 +2228,13 @@ export default function App() {
                             <Copy size={16} />
                             {activePlaylist.inviteCode}
                           </button>
-                          {activePlaylist.ownerId === user.id && (
+                          {activePlaylistCanEdit && activePlaylist.tracks.length > 0 && (
+                            <button className="danger-action subtle-danger" disabled={playlistBusy} onClick={() => startTrackSelection('playlist')} type="button">
+                              <ListChecks size={16} />
+                              Retirer
+                            </button>
+                          )}
+                          {activePlaylistCanManage && (
                             <>
                               <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
                                 Generer un code
@@ -1909,7 +2247,44 @@ export default function App() {
                           )}
                         </div>
 
-                        {activePlaylist.tracks.length > 0 && (
+                        {activePlaylistCanManage && (
+                          <section className="playlist-admin-panel">
+                            <div className="section-title">
+                              <Shield size={16} />
+                              Membres
+                            </div>
+                            <div className="member-manage-list">
+                              {activePlaylist.members.map((member) => (
+                                <article className="member-manage-row" key={member.userId}>
+                                  <ProfileAvatar avatarUrl={member.avatarUrl} className="member-manage-avatar" label={member.displayName} />
+                                  <div>
+                                    <strong>{member.displayName}</strong>
+                                    <span>{roleLabel(member.role)}</span>
+                                  </div>
+                                  {member.role === 'owner' ? (
+                                    <span className="role-pill">Proprietaire</span>
+                                  ) : (
+                                    <>
+                                      <select
+                                        disabled={playlistBusy}
+                                        onChange={(event) => updatePlaylistMemberRole(member, event.target.value as PlaylistRole)}
+                                        value={member.role}
+                                      >
+                                        <option value="editor">Editeur</option>
+                                        <option value="listener">Lecteur</option>
+                                      </select>
+                                      <button aria-label="Retirer le membre" disabled={playlistBusy} onClick={() => removePlaylistMember(member)} type="button">
+                                        <UserMinus size={16} />
+                                      </button>
+                                    </>
+                                  )}
+                                </article>
+                              ))}
+                            </div>
+                          </section>
+                        )}
+
+                        {selectionActive && activePlaylist.tracks.length > 0 && (
                           <div className="bulk-action-bar">
                             <button className="muted-action" onClick={toggleSelectAllTracks} type="button">
                               {allSelectableTracksSelected ? 'Tout deselectionner' : 'Tout selectionner'}
@@ -1934,19 +2309,22 @@ export default function App() {
                             <article
                               className={[
                                 'playlist-track-row',
+                                selectionActive ? 'selecting' : '',
                                 currentTrack?.id === track.id ? 'active' : '',
                                 selectedTrackIds.has(track.id) ? 'selected' : '',
                               ].filter(Boolean).join(' ')}
                               key={`${track.id}-${index}`}
                             >
-                              <label className="playlist-row-select" aria-label={`Selectionner ${track.title}`}>
-                                <input
-                                  checked={selectedTrackIds.has(track.id)}
-                                  onChange={() => toggleTrackSelection(track)}
-                                  type="checkbox"
-                                />
-                                <span />
-                              </label>
+                              {selectionActive && (
+                                <label className="playlist-row-select" aria-label={`Selectionner ${track.title}`}>
+                                  <input
+                                    checked={selectedTrackIds.has(track.id)}
+                                    onChange={() => toggleTrackSelection(track)}
+                                    type="checkbox"
+                                  />
+                                  <span />
+                                </label>
+                              )}
                               <button className="playlist-row-cover" onClick={() => playTrack(track, activePlaylist.tracks, index)} type="button">
                                 {track.thumbnail ? <img src={track.thumbnail} alt="" loading="lazy" /> : <span />}
                                 <i>{currentTrack?.id === track.id && playing ? <Pause size={17} /> : <Play size={17} />}</i>
@@ -1961,9 +2339,11 @@ export default function App() {
                                 <button className={savedIds.has(track.id) ? 'saved' : ''} aria-label="Sauvegarder" onClick={() => toggleSave(track)} type="button">
                                   <Heart size={17} />
                                 </button>
-                                <button aria-label="Retirer de la playlist" onClick={() => removeTrackFromPlaylist(track)} type="button">
-                                  <Trash2 size={17} />
-                                </button>
+                                {activePlaylistCanEdit && (
+                                  <button aria-label="Retirer de la playlist" onClick={() => removeTrackFromPlaylist(track)} type="button">
+                                    <Trash2 size={17} />
+                                  </button>
+                                )}
                                 {track.source !== 'cloud' && (
                                   <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
                                     {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
@@ -1988,7 +2368,7 @@ export default function App() {
                   </section>
                 ) : (
                   <>
-                    {view === 'cloud' && cloudTracks.length > 0 && (
+                    {view === 'cloud' && selectionActive && cloudTracks.length > 0 && (
                       <div className="bulk-action-bar">
                         <button className="muted-action" onClick={toggleSelectAllTracks} type="button">
                           {allSelectableTracksSelected ? 'Tout deselectionner' : 'Tout selectionner'}
@@ -2018,12 +2398,13 @@ export default function App() {
                           <article
                             className={[
                               'track-card',
+                              selectionActive ? 'selecting' : '',
                               currentTrack?.id === track.id ? 'active' : '',
                               selectedTrackIds.has(track.id) ? 'selected' : '',
                             ].filter(Boolean).join(' ')}
                             key={`${track.id}-${index}`}
                           >
-                            {view === 'cloud' && (
+                            {view === 'cloud' && selectionActive && (
                               <label className="track-select" aria-label={`Selectionner ${track.title}`}>
                                 <input
                                   checked={selectedTrackIds.has(track.id)}
@@ -2046,7 +2427,7 @@ export default function App() {
                               <button className={savedIds.has(track.id) ? 'saved' : ''} aria-label="Sauvegarder" onClick={() => toggleSave(track)} type="button">
                                 <Heart size={17} />
                               </button>
-                              <button aria-label="Ajouter a la playlist" disabled={!playlistTarget} onClick={() => addTrackToPlaylist(track)} type="button">
+                              <button aria-label="Ajouter a la playlist" disabled={!playlistTarget || !playlistTargetCanEdit} onClick={() => addTrackToPlaylist(track)} type="button">
                                 <Plus size={17} />
                               </button>
                               {view === 'cloud' && track.source === 'cloud' && (
@@ -2099,6 +2480,9 @@ export default function App() {
           </div>
 
           <div className="player-controls">
+            <button aria-label="Aleatoire" className={shuffleEnabled ? 'active' : ''} onClick={() => setShuffleEnabled((enabled) => !enabled)} type="button">
+              <Shuffle size={19} />
+            </button>
             <button aria-label="Precedent" onClick={() => playOffset(-1)} type="button">
               <SkipBack size={20} />
             </button>
@@ -2107,6 +2491,9 @@ export default function App() {
             </button>
             <button aria-label="Suivant" onClick={() => playOffset(1)} type="button">
               <SkipForward size={20} />
+            </button>
+            <button aria-label="Repeter" className={repeatEnabled ? 'active' : ''} onClick={() => setRepeatEnabled((enabled) => !enabled)} type="button">
+              <Repeat size={19} />
             </button>
             <div className="volume-menu">
               <button aria-label="Volume" className={volumeOpen ? 'active' : ''} onClick={() => setVolumeOpen((open) => !open)} type="button">
@@ -2140,16 +2527,7 @@ export default function App() {
               disabled={!duration}
               onChange={(event) => {
                 const nextTime = Number(event.target.value);
-                try {
-                  if (currentTrack?.source !== 'cloud') {
-                    youtubePlayerRef.current?.seekTo(nextTime, true);
-                  } else if (audioRef.current) {
-                    audioRef.current.currentTime = nextTime;
-                  }
-                } catch {
-                  setMessage('Deplacement indisponible pendant le chargement.');
-                }
-                setCurrentTime(nextTime);
+                seekCurrentTrack(nextTime);
               }}
               type="range"
             />
@@ -2168,6 +2546,10 @@ function getInitialVolume() {
   const saved = Number(localStorage.getItem('flowify.volume'));
   if (Number.isFinite(saved)) return Math.min(1, Math.max(0, saved));
   return 1;
+}
+
+function getAuthRedirectUrl() {
+  return `${window.location.origin}${import.meta.env.BASE_URL}`;
 }
 
 function isThemeColor(value: string) {
@@ -2308,10 +2690,21 @@ function playlistHeroImage(playlist: Playlist) {
 function profileToPlaylistMember(userId: string, profile?: Profile): PlaylistMember {
   return {
     userId,
-    role: 'member',
+    role: 'listener',
     displayName: profile?.display_name || displayNameFromEmail(profile?.email) || 'Membre',
     avatarUrl: profile?.avatar_url || '',
   };
+}
+
+function roleLabel(role: PlaylistRole) {
+  if (role === 'owner') return 'Proprietaire';
+  if (role === 'editor') return 'Editeur';
+  return 'Lecteur';
+}
+
+function normalizePlaylistRole(role: string): PlaylistRole {
+  if (role === 'owner' || role === 'editor' || role === 'listener') return role;
+  return 'editor';
 }
 
 function formatTime(value: number) {
@@ -2431,6 +2824,13 @@ function errorMessage(error: unknown) {
   }
   if (message.includes('Could not find the function public.delete_playlist')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+  }
+  if (
+    message.includes('Could not find the function public.update_playlist_name') ||
+    message.includes('Could not find the function public.update_playlist_member_role') ||
+    message.includes('Could not find the function public.remove_playlist_member')
+  ) {
+    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql pour activer renommage et permissions.';
   }
   if (message.includes('Could not find the function public.join_playlist_by_code')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';

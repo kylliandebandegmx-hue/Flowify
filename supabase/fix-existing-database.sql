@@ -71,18 +71,22 @@ alter table public.playlist_members
   drop constraint if exists playlist_members_role_check;
 
 alter table public.playlist_members
-  alter column role set default 'member';
+  alter column role set default 'listener';
 
 update public.playlist_members
-set role = 'member'
+set role = case
+  when role = 'owner' then 'owner'
+  when role in ('editor', 'listener') then role
+  else 'editor'
+end
 where role is null
-or role not in ('owner', 'member');
+or role not in ('owner', 'editor', 'listener');
 
 alter table public.playlist_members
   alter column role set not null;
 
 alter table public.playlist_members
-  add constraint playlist_members_role_check check (role in ('owner', 'member'));
+  add constraint playlist_members_role_check check (role in ('owner', 'editor', 'listener'));
 
 alter table public.playlist_tracks
   add column if not exists position integer not null default 0;
@@ -158,6 +162,22 @@ as $$
     or public.is_playlist_member(target_playlist_id);
 $$;
 
+create or replace function public.can_edit_playlist(target_playlist_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select public.is_playlist_owner(target_playlist_id)
+    or exists (
+      select 1
+      from public.playlist_members pm
+      where pm.playlist_id = target_playlist_id
+      and pm.user_id = auth.uid()
+      and pm.role = 'editor'
+    );
+$$;
+
 alter table public.profiles enable row level security;
 alter table public.playlists enable row level security;
 alter table public.cloud_tracks enable row level security;
@@ -177,9 +197,11 @@ drop policy if exists "playlists are updatable by owner" on public.playlists;
 drop policy if exists "playlists are deletable by owner" on public.playlists;
 drop policy if exists "playlist members are readable by members" on public.playlist_members;
 drop policy if exists "playlist members are insertable by owner" on public.playlist_members;
+drop policy if exists "playlist members are updatable by owner" on public.playlist_members;
 drop policy if exists "playlist members are deletable by self or owner" on public.playlist_members;
 drop policy if exists "playlist tracks readable through membership" on public.playlist_tracks;
 drop policy if exists "playlist tracks insertable through membership" on public.playlist_tracks;
+drop policy if exists "playlist tracks updatable through editors" on public.playlist_tracks;
 drop policy if exists "playlist tracks deletable through membership" on public.playlist_tracks;
 
 create policy "profiles are readable by authenticated"
@@ -233,6 +255,11 @@ create policy "playlist members are insertable by owner"
   on public.playlist_members for insert
   with check (public.is_playlist_owner(playlist_id));
 
+create policy "playlist members are updatable by owner"
+  on public.playlist_members for update
+  using (public.is_playlist_owner(playlist_id))
+  with check (public.is_playlist_owner(playlist_id));
+
 create policy "playlist members are deletable by self or owner"
   on public.playlist_members for delete
   using (auth.uid() = user_id or public.is_playlist_owner(playlist_id));
@@ -243,16 +270,24 @@ create policy "playlist tracks readable through membership"
 
 create policy "playlist tracks insertable through membership"
   on public.playlist_tracks for insert
-  with check (public.can_access_playlist(playlist_id));
+  with check (public.can_edit_playlist(playlist_id));
+
+create policy "playlist tracks updatable through editors"
+  on public.playlist_tracks for update
+  using (public.can_edit_playlist(playlist_id))
+  with check (public.can_edit_playlist(playlist_id));
 
 create policy "playlist tracks deletable through membership"
   on public.playlist_tracks for delete
-  using (public.can_access_playlist(playlist_id));
+  using (public.can_edit_playlist(playlist_id));
 
 drop function if exists public.add_track_to_playlist(uuid, text, integer, jsonb);
 drop function if exists public.remove_track_from_playlist(uuid, text);
 drop function if exists public.delete_cloud_track(text);
 drop function if exists public.delete_playlist(uuid);
+drop function if exists public.update_playlist_name(uuid, text);
+drop function if exists public.update_playlist_member_role(uuid, uuid, text);
+drop function if exists public.remove_playlist_member(uuid, uuid);
 drop function if exists public.join_playlist_by_code(text);
 drop function if exists public.regenerate_playlist_invite_code(uuid);
 
@@ -272,8 +307,8 @@ begin
     raise exception 'not authenticated';
   end if;
 
-  if not public.can_access_playlist(target_playlist_id) then
-    raise exception 'playlist inaccessible';
+  if not public.can_edit_playlist(target_playlist_id) then
+    raise exception 'permission editeur requise';
   end if;
 
   if nullif(target_youtube_id, '') is null then
@@ -311,8 +346,8 @@ begin
     raise exception 'not authenticated';
   end if;
 
-  if not public.can_access_playlist(target_playlist_id) then
-    raise exception 'playlist inaccessible';
+  if not public.can_edit_playlist(target_playlist_id) then
+    raise exception 'permission editeur requise';
   end if;
 
   delete from public.playlist_tracks
@@ -389,6 +424,120 @@ $$;
 
 grant execute on function public.delete_playlist(uuid) to authenticated;
 
+create or replace function public.update_playlist_name(
+  target_playlist_id uuid,
+  next_name text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_playlist_owner(target_playlist_id) then
+    raise exception 'seul le proprietaire peut renommer la playlist';
+  end if;
+
+  if nullif(trim(next_name), '') is null then
+    raise exception 'nom playlist manquant';
+  end if;
+
+  update public.playlists
+  set name = trim(next_name)
+  where id = target_playlist_id;
+end;
+$$;
+
+grant execute on function public.update_playlist_name(uuid, text) to authenticated;
+
+create or replace function public.update_playlist_member_role(
+  target_playlist_id uuid,
+  target_user_id uuid,
+  next_role text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  owner_user_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_playlist_owner(target_playlist_id) then
+    raise exception 'seul le proprietaire peut gerer les permissions';
+  end if;
+
+  select owner_id
+  into owner_user_id
+  from public.playlists
+  where id = target_playlist_id;
+
+  if target_user_id = owner_user_id then
+    raise exception 'le proprietaire reste proprietaire';
+  end if;
+
+  if next_role not in ('editor', 'listener') then
+    raise exception 'role invalide';
+  end if;
+
+  update public.playlist_members
+  set role = next_role
+  where playlist_id = target_playlist_id
+  and user_id = target_user_id;
+
+  if not found then
+    raise exception 'membre introuvable';
+  end if;
+end;
+$$;
+
+grant execute on function public.update_playlist_member_role(uuid, uuid, text) to authenticated;
+
+create or replace function public.remove_playlist_member(
+  target_playlist_id uuid,
+  target_user_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  owner_user_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  select owner_id
+  into owner_user_id
+  from public.playlists
+  where id = target_playlist_id;
+
+  if target_user_id = owner_user_id then
+    raise exception 'le proprietaire ne peut pas etre retire';
+  end if;
+
+  if auth.uid() <> target_user_id and not public.is_playlist_owner(target_playlist_id) then
+    raise exception 'seul le proprietaire peut retirer un membre';
+  end if;
+
+  delete from public.playlist_members
+  where playlist_id = target_playlist_id
+  and user_id = target_user_id;
+end;
+$$;
+
+grant execute on function public.remove_playlist_member(uuid, uuid) to authenticated;
+
 create or replace function public.add_owner_as_playlist_member()
 returns trigger
 language plpgsql
@@ -398,7 +547,7 @@ as $$
 begin
   insert into public.playlist_members (playlist_id, user_id, role)
   values (new.id, new.owner_id, 'owner')
-  on conflict (playlist_id, user_id) do nothing;
+  on conflict (playlist_id, user_id) do update set role = 'owner';
   return new;
 end;
 $$;
@@ -432,7 +581,7 @@ begin
   end if;
 
   insert into public.playlist_members (playlist_id, user_id, role)
-  values (target_playlist_id, auth.uid(), 'member')
+  values (target_playlist_id, auth.uid(), 'listener')
   on conflict (playlist_id, user_id) do nothing;
 
   return target_playlist_id;
