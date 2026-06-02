@@ -1,7 +1,7 @@
 {
   "name": "Flowify",
   "short_name": "Flowify",
-  "description": "Lecteur musical PWA avec YouTube Data API v3 et yt-dlp cote serveur.",
+  "description": "Lecteur musical PWA avec Cloud, YouTube Data API v3 et telechargement yt-dlp cote serveur.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

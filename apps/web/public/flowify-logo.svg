@@ -1,6 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 260" role="img" aria-labelledby="title">
   <title id="title">Flowify</title>
-  <rect width="900" height="260" rx="36" fill="#050609"/>
   <path d="M132 128C182 28 262 21 306 134" fill="none" stroke="url(#a)" stroke-width="18" stroke-linecap="round"/>
   <path d="M184 141C224 65 288 63 327 145" fill="none" stroke="url(#b)" stroke-width="16" stroke-linecap="round" opacity=".88"/>
   <path d="M296 157C347 35 395 40 437 149" fill="none" stroke="url(#c)" stroke-width="18" stroke-linecap="round"/>

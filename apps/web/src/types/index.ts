@@ -13,6 +13,8 @@ export interface Track {
   contentType?: string;
   sizeBytes?: number;
   url?: string;
+  addedById?: string | null;
+  addedBy?: PlaylistMember;
 }
 
 export interface SearchResult {
