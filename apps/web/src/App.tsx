@@ -22,7 +22,6 @@ import {
   Sparkles,
   Trash2,
   UserPlus,
-  Users,
   Volume2,
   X,
   Youtube,
@@ -68,6 +67,11 @@ import type {
 
 type ViewMode = 'home' | 'search' | 'cloud' | 'playlists' | 'settings';
 type AuthMode = 'signin' | 'signup';
+
+const THEME_PRIMARY_KEY = 'flowify.theme.primary';
+const THEME_SECONDARY_KEY = 'flowify.theme.secondary';
+const DEFAULT_PRIMARY_COLOR = '#4BF5FB';
+const DEFAULT_SECONDARY_COLOR = '#9E43F0';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -152,6 +156,8 @@ export default function App() {
   const [joinCode, setJoinCode] = useState('');
   const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
   const [settingsFlowifyApiUrl, setSettingsFlowifyApiUrl] = useState(() => getFlowifyApiBaseUrl());
+  const [primaryColor, setPrimaryColor] = useState(() => readThemeColor(THEME_PRIMARY_KEY, DEFAULT_PRIMARY_COLOR));
+  const [secondaryColor, setSecondaryColor] = useState(() => readThemeColor(THEME_SECONDARY_KEY, DEFAULT_SECONDARY_COLOR));
   const [hasYoutubeKey, setHasYoutubeKey] = useState(() => Boolean(getYoutubeApiKey()));
   const [hasFlowifyApi, setHasFlowifyApi] = useState(() => hasYtdlpAudioApi());
   const [nextPageToken, setNextPageToken] = useState('');
@@ -206,6 +212,10 @@ export default function App() {
     });
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    applyThemeColors(primaryColor, secondaryColor);
+  }, [primaryColor, secondaryColor]);
 
   useEffect(() => {
     const onBeforeInstall = (event: Event) => {
@@ -752,6 +762,28 @@ export default function App() {
     } finally {
       setProfileBusy(false);
     }
+  };
+
+  const saveAppearance = (event: FormEvent) => {
+    event.preventDefault();
+    const nextPrimary = isThemeColor(primaryColor) ? primaryColor : DEFAULT_PRIMARY_COLOR;
+    const nextSecondary = isThemeColor(secondaryColor) ? secondaryColor : DEFAULT_SECONDARY_COLOR;
+
+    localStorage.setItem(THEME_PRIMARY_KEY, nextPrimary);
+    localStorage.setItem(THEME_SECONDARY_KEY, nextSecondary);
+    setPrimaryColor(nextPrimary);
+    setSecondaryColor(nextSecondary);
+    applyThemeColors(nextPrimary, nextSecondary);
+    setMessage('Couleurs sauvegardees.');
+  };
+
+  const resetAppearance = () => {
+    localStorage.removeItem(THEME_PRIMARY_KEY);
+    localStorage.removeItem(THEME_SECONDARY_KEY);
+    setPrimaryColor(DEFAULT_PRIMARY_COLOR);
+    setSecondaryColor(DEFAULT_SECONDARY_COLOR);
+    applyThemeColors(DEFAULT_PRIMARY_COLOR, DEFAULT_SECONDARY_COLOR);
+    setMessage('Couleurs reinitialisees.');
   };
 
   const selectProfilePhoto = (event: ChangeEvent<HTMLInputElement>) => {
@@ -1303,7 +1335,6 @@ export default function App() {
                 />
                 <div>
                   <strong>{profile?.display_name || displayNameFromEmail(user.email) || 'Flowify'}</strong>
-                  <span>{user.email}</span>
                 </div>
               </div>
             </div>
@@ -1376,6 +1407,7 @@ export default function App() {
                     onClick={() => openPlaylist(playlist)}
                     type="button"
                   >
+                    <PlaylistSidebarCover playlist={playlist} />
                     <span>{playlist.name}</span>
                     <small>{playlist.tracks.length}</small>
                   </button>
@@ -1391,19 +1423,6 @@ export default function App() {
               <button className={view === 'settings' ? 'settings-bottom-button active' : 'settings-bottom-button'} onClick={() => openView('settings')} type="button">
                 <Settings size={18} />
                 Parametres
-              </button>
-              <div className="status-panel">
-                <div>
-                  <Server size={18} />
-                  <span>{statusLabel}</span>
-                </div>
-                <button onClick={refreshHealth} type="button">
-                  <Cloud size={16} />
-                </button>
-              </div>
-              <button className="logout-button" onClick={signOut} type="button">
-                <LogOut size={18} />
-                Deconnexion
               </button>
             </>
           ) : (
@@ -1556,6 +1575,68 @@ export default function App() {
                   </div>
                   <span>{statusLabel}</span>
                 </form>
+                <form className="settings-card settings-form" onSubmit={saveAppearance}>
+                  <h2>Couleurs</h2>
+                  <div className="color-settings">
+                    <label>
+                      Couleur principale
+                      <span className="color-row">
+                        <input
+                          aria-label="Couleur principale"
+                          onChange={(event) => setPrimaryColor(event.target.value)}
+                          type="color"
+                          value={primaryColor}
+                        />
+                        <strong>{primaryColor.toUpperCase()}</strong>
+                      </span>
+                    </label>
+                    <label>
+                      Couleur secondaire
+                      <span className="color-row">
+                        <input
+                          aria-label="Couleur secondaire"
+                          onChange={(event) => setSecondaryColor(event.target.value)}
+                          type="color"
+                          value={secondaryColor}
+                        />
+                        <strong>{secondaryColor.toUpperCase()}</strong>
+                      </span>
+                    </label>
+                  </div>
+                  <div className="settings-actions">
+                    <button className="code-pill" type="submit">
+                      <Settings size={16} />
+                      Sauvegarder
+                    </button>
+                    <button className="muted-action" onClick={resetAppearance} type="button">
+                      Reinitialiser
+                    </button>
+                  </div>
+                  <span>Ces couleurs restent sur cet appareil et changent aussi la sidebar.</span>
+                </form>
+                <article className="settings-card">
+                  <h2>Etat des services</h2>
+                  <div className="status-panel settings-status-panel">
+                    <div>
+                      <Server size={18} />
+                      <span>{statusLabel}</span>
+                    </div>
+                    <button onClick={refreshHealth} type="button">
+                      <Cloud size={16} />
+                    </button>
+                  </div>
+                  <span>
+                    YouTube: {hasYoutubeKey ? 'pret' : 'sans cle'} - Cloud: {health?.cloudStorageAvailable ? 'pret' : 'a verifier'}
+                  </span>
+                </article>
+                <article className="settings-card">
+                  <h2>Session</h2>
+                  <p>{profile?.display_name || displayNameFromEmail(user.email) || 'Compte Flowify'}</p>
+                  <button className="logout-button settings-logout-button" onClick={signOut} type="button">
+                    <LogOut size={18} />
+                    Deconnexion
+                  </button>
+                </article>
                 <article className="settings-card">
                   <h2>Android APK</h2>
                   <p>Le workflow GitHub genere un APK debug a chaque push.</p>
@@ -1606,13 +1687,9 @@ export default function App() {
                           )}
                           <PlaylistCover playlist={activePlaylist} />
                           <div className="playlist-hero-copy">
-                            <span className="playlist-type">
-                              <ListMusic size={15} />
-                              Playlist Flowify
-                            </span>
                             <h2>{activePlaylist.name}</h2>
                             <p>
-                              {activePlaylist.tracks.length} titre{activePlaylist.tracks.length > 1 ? 's' : ''} · {activePlaylist.memberCount} membre{activePlaylist.memberCount > 1 ? 's' : ''}
+                              {activePlaylist.tracks.length} titre{activePlaylist.tracks.length > 1 ? 's' : ''} - {activePlaylist.memberCount} membre{activePlaylist.memberCount > 1 ? 's' : ''}
                             </p>
                             <div className="member-strip" aria-label="Membres de la playlist">
                               {activePlaylist.members.slice(0, 6).map((member) => (
@@ -1859,6 +1936,32 @@ function getInitialVolume() {
   return 1;
 }
 
+function isThemeColor(value: string) {
+  return /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function readThemeColor(key: string, fallback: string) {
+  try {
+    const saved = localStorage.getItem(key) || '';
+    return isThemeColor(saved) ? saved : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function applyThemeColors(primary: string, secondary: string) {
+  if (typeof document === 'undefined') return;
+  const nextPrimary = isThemeColor(primary) ? primary : DEFAULT_PRIMARY_COLOR;
+  const nextSecondary = isThemeColor(secondary) ? secondary : DEFAULT_SECONDARY_COLOR;
+  const root = document.documentElement;
+  root.style.setProperty('--cyan', nextPrimary);
+  root.style.setProperty('--green', nextPrimary);
+  root.style.setProperty('--violet', nextSecondary);
+  root.style.setProperty('--accent-primary', nextPrimary);
+  root.style.setProperty('--accent-secondary', nextSecondary);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', nextSecondary);
+}
+
 function loadYouTubeIframeApi(): Promise<YouTubeApi> {
   if (window.YT?.Player) return Promise.resolve(window.YT);
   if (youtubeApiPromise) return youtubeApiPromise;
@@ -1941,6 +2044,15 @@ function PlaylistCover({ playlist }: { playlist: Playlist }) {
         <img key={track.id} src={track.thumbnail} alt="" loading="lazy" />
       ))}
     </div>
+  );
+}
+
+function PlaylistSidebarCover({ playlist }: { playlist: Playlist }) {
+  const image = playlistHeroImage(playlist);
+  return (
+    <span className="playlist-sidebar-cover" aria-hidden="true">
+      {image ? <img src={image} alt="" loading="lazy" /> : <ListMusic size={16} />}
+    </span>
   );
 }
 

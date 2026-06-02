@@ -17,6 +17,8 @@
   --cyan: #4BF5FB;
   --green: #4BF5FB;
   --violet: #9E43F0;
+  --accent-primary: #4BF5FB;
+  --accent-secondary: #9E43F0;
   --rose: #f47aa3;
   --yellow: #ffd166;
   --radius: 8px;
@@ -77,12 +79,19 @@ button:disabled {
   border-right: 1px solid var(--line);
   background: rgba(0, 0, 0, 0.88);
   backdrop-filter: blur(18px);
+  scrollbar-width: none;
+}
+
+.sidebar::-webkit-scrollbar,
+.playlist-stack::-webkit-scrollbar {
+  display: none;
 }
 
 .sidebar-head {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 12px;
 }
 
@@ -97,6 +106,7 @@ button:disabled {
   width: 172px;
   max-width: 100%;
   height: auto;
+  margin-inline: auto;
   border-radius: 8px;
 }
 
@@ -154,6 +164,11 @@ button:disabled {
   background: var(--panel-2);
 }
 
+.sidebar-close {
+  position: absolute;
+  right: 0;
+}
+
 .nav-list {
   display: grid;
   gap: 8px;
@@ -200,6 +215,7 @@ button:disabled {
 .sidebar-account {
   margin-top: 0;
   background: linear-gradient(135deg, rgba(75, 245, 251, 0.1), rgba(158, 67, 240, 0.12));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--cyan) 12%, transparent), color-mix(in srgb, var(--violet) 14%, transparent));
 }
 
 .section-title {
@@ -256,14 +272,15 @@ button:disabled {
   gap: 6px;
   max-height: 168px;
   overflow-y: auto;
+  scrollbar-width: none;
 }
 
 .playlist-button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
-  min-height: 36px;
+  min-height: 42px;
   padding: 0 9px;
   border-radius: var(--radius);
   color: var(--muted);
@@ -285,6 +302,24 @@ button:disabled {
 
 .playlist-button small {
   color: var(--green);
+}
+
+.playlist-sidebar-cover {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--panel-2);
+}
+
+.playlist-sidebar-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .status-panel,
@@ -383,7 +418,7 @@ button:disabled {
   color: #061014;
   font-size: 13px;
   font-weight: 800;
-  background: linear-gradient(135deg, #4BF5FB, #9E43F0);
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
   object-fit: cover;
 }
 
@@ -530,6 +565,14 @@ button:disabled {
   background:
     linear-gradient(180deg, rgba(75, 245, 251, 0.24), rgba(158, 67, 240, 0.18) 42%, rgba(18, 18, 18, 0.92)),
     #171717;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--cyan) 24%, transparent),
+      color-mix(in srgb, var(--violet) 18%, transparent) 42%,
+      rgba(18, 18, 18, 0.92)
+    ),
+    #171717;
 }
 
 .playlist-hero::after {
@@ -636,10 +679,11 @@ button:disabled {
   color: #061006;
   background: var(--green);
   box-shadow: 0 12px 26px rgba(75, 245, 251, 0.24);
+  box-shadow: 0 12px 26px color-mix(in srgb, var(--cyan) 24%, transparent);
 }
 
 .playlist-play.active {
-  background: linear-gradient(135deg, #4BF5FB, #9E43F0);
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
 }
 
 .cover-upload-action {
@@ -650,9 +694,11 @@ button:disabled {
   min-height: 38px;
   padding: 0 12px;
   border: 1px solid rgba(75, 245, 251, 0.34);
+  border-color: color-mix(in srgb, var(--cyan) 34%, transparent);
   border-radius: var(--radius);
   color: var(--text);
   background: rgba(75, 245, 251, 0.1);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
   cursor: pointer;
   font-weight: 750;
 }
@@ -710,7 +756,7 @@ button:disabled {
 }
 
 .playlist-row-cover span {
-  background: linear-gradient(135deg, #4BF5FB, #9E43F0);
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
 }
 
 .playlist-row-cover i {
@@ -879,6 +925,54 @@ button:disabled {
   gap: 8px;
 }
 
+.color-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.color-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: #0b0c11;
+}
+
+.settings-card .color-row {
+  color: var(--text);
+}
+
+.settings-card .color-row strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+
+.settings-card input[type="color"] {
+  width: 48px;
+  height: 36px;
+  padding: 2px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-status-panel {
+  margin-top: 0;
+}
+
+.settings-logout-button {
+  width: fit-content;
+  min-width: 190px;
+  margin-top: auto;
+}
+
 .profile-editor {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
@@ -981,7 +1075,7 @@ button:disabled {
 }
 
 .cover-button span {
-  background: linear-gradient(135deg, #4BF5FB, #9E43F0);
+  background: linear-gradient(135deg, var(--cyan), var(--violet));
 }
 
 .cover-button i {
