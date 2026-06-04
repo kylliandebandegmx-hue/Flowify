@@ -795,7 +795,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 6px;
   background: #282828;
-  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.48);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
 }
 
 .playlist-more-menu button {
@@ -1050,15 +1050,15 @@ button:disabled {
   background: #252525;
 }
 
-.playlist-row-cover img,
-.playlist-row-cover span {
+.playlist-row-cover > img,
+.playlist-row-cover > span {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.playlist-row-cover span {
+.playlist-row-cover > span {
   background: linear-gradient(135deg, var(--cyan), var(--violet));
 }
 
@@ -1068,6 +1068,28 @@ button:disabled {
   display: grid;
   place-items: center;
   color: #fff;
+  background: rgba(0, 0, 0, 0.34);
+}
+
+.cover-playing-bars {
+  width: 20px;
+  height: 20px;
+  color: var(--green);
+}
+
+.cover-playing-bars span {
+  width: 3px;
+  height: 7px;
+}
+
+.now-playing-art > .cover-playing-bars {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
   background: rgba(0, 0, 0, 0.34);
 }
 
@@ -1533,15 +1555,15 @@ button:disabled {
   background: #1b1d25;
 }
 
-.cover-button img,
-.cover-button span {
+.cover-button > img,
+.cover-button > span {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.cover-button span {
+.cover-button > span {
   background: linear-gradient(135deg, var(--cyan), var(--violet));
 }
 
@@ -1732,8 +1754,11 @@ button:disabled {
 }
 
 .now-playing-art {
+  position: relative;
   width: 56px;
   height: 56px;
+  overflow: hidden;
+  border-radius: 4px;
 }
 
 .now-playing img,
@@ -1821,8 +1846,10 @@ button:disabled {
 
 .volume-menu {
   position: relative;
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 128px;
 }
 
 .volume-menu > button.active {
@@ -1830,28 +1857,42 @@ button:disabled {
   background: transparent;
 }
 
-.volume-popover {
-  position: absolute;
-  bottom: 48px;
-  left: 50%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
-  align-items: center;
-  gap: 8px;
-  width: 164px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  color: var(--muted);
-  font-size: 12px;
-  background: rgba(16, 17, 22, 0.98);
-  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
-  transform: translateX(-50%);
+.volume-slider {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  outline: 0;
+  appearance: none;
+  cursor: pointer;
 }
 
-.volume-popover input {
-  width: 100%;
-  accent-color: var(--green);
+.volume-slider::-webkit-slider-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  appearance: none;
+  background: #fff;
+}
+
+.volume-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: #4c4c4c;
+}
+
+.volume-slider::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--green);
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
 }
 
 .progress-wrap {
@@ -2015,7 +2056,7 @@ button:disabled {
     z-index: 3;
     align-items: flex-start;
     padding: 10px 0;
-    background: linear-gradient(180deg, rgba(5, 5, 5, 0.95), rgba(5, 5, 5, 0.72));
+    background: rgba(5, 5, 5, 0.92);
     backdrop-filter: blur(12px);
   }
 
@@ -2068,6 +2109,10 @@ button:disabled {
   .player-controls {
     grid-column: 2;
     grid-row: 1;
+  }
+
+  .volume-menu {
+    width: 112px;
   }
 
   .progress-wrap {
@@ -2239,6 +2284,27 @@ button:disabled {
     grid-column: 1;
     grid-row: 2;
     gap: 4px;
+  }
+
+  .volume-menu {
+    width: 34px;
+  }
+
+  .volume-slider {
+    display: none;
+  }
+
+  .volume-menu.open .volume-slider {
+    position: absolute;
+    right: 0;
+    bottom: 44px;
+    display: block;
+    width: 136px;
+    height: 28px;
+    padding: 12px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background-color: #181818;
   }
 
   .player button {

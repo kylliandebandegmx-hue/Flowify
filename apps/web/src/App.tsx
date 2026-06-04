@@ -149,6 +149,7 @@ export default function App() {
   const currentTrackRef = useRef<Track | null>(null);
   const shuffleEnabledRef = useRef(false);
   const repeatEnabledRef = useRef(false);
+  const autoAdvanceLockRef = useRef(false);
   const youtubeContainerRef = useRef<HTMLDivElement | null>(null);
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const youtubeProgressTimerRef = useRef<number | null>(null);
@@ -1500,13 +1501,8 @@ export default function App() {
               stopYouTubeProgress();
             }
             if (event.data === api.PlayerState.ENDED) {
-              setPlaying(false);
               stopYouTubeProgress();
-              if (repeatEnabledRef.current && currentTrackRef.current) {
-                void playTrack(currentTrackRef.current, queueRef.current, queueIndexRef.current, { skipProbe: true });
-              } else {
-                playOffset(1, { skipProbe: true });
-              }
+              advanceFromPlaybackEnd();
             }
           },
         },
@@ -1525,6 +1521,7 @@ export default function App() {
 
   const playTrack = async (track: Track, list = visibleTracks, index = 0, options: PlayTrackOptions = {}) => {
     const audio = audioRef.current;
+    autoAdvanceLockRef.current = false;
 
     setCurrentTrack(track);
     setQueue(list);
@@ -1650,6 +1647,42 @@ export default function App() {
     playTrack(activeQueue[nextIndex], activeQueue, nextIndex, options);
   };
 
+  const advanceFromPlaybackEnd = () => {
+    if (autoAdvanceLockRef.current) return;
+    autoAdvanceLockRef.current = true;
+    window.setTimeout(() => {
+      autoAdvanceLockRef.current = false;
+    }, 1800);
+
+    setPlaying(false);
+    if (repeatEnabledRef.current && currentTrackRef.current) {
+      void playTrack(currentTrackRef.current, queueRef.current, queueIndexRef.current, { skipProbe: true });
+    } else {
+      playOffset(1, { skipProbe: true });
+    }
+  };
+
+  const hasNextPlaybackTarget = () => {
+    if (repeatEnabledRef.current && currentTrackRef.current) return true;
+    const activeQueue = queueRef.current.length ? queueRef.current : queue;
+    const activeIndex = queueRef.current.length ? queueIndexRef.current : queueIndex;
+    if (!activeQueue.length) return false;
+    if (shuffleEnabledRef.current && activeQueue.length > 1) return true;
+    return activeIndex + 1 < activeQueue.length;
+  };
+
+  const syncCloudPlaybackTime = (audio: HTMLAudioElement) => {
+    const nextTime = audio.currentTime || 0;
+    setCurrentTime(nextTime);
+    const nextDuration = audio.duration;
+    if (Number.isFinite(nextDuration) && nextDuration > 0) {
+      setDuration(nextDuration);
+      if (!audio.paused && nextDuration - nextTime <= 0.35 && hasNextPlaybackTarget()) {
+        advanceFromPlaybackEnd();
+      }
+    }
+  };
+
   const toggleSave = async (track: Track) => {
     if (!user) return;
 
@@ -1710,6 +1743,23 @@ export default function App() {
     setStandalone(isStandaloneDisplay());
   };
 
+  useEffect(() => {
+    if (!playing || currentTrack?.source !== 'cloud') return undefined;
+    const timer = window.setInterval(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (audio.ended) {
+        advanceFromPlaybackEnd();
+        return;
+      }
+      if (!audio.paused) {
+        syncCloudPlaybackTime(audio);
+      }
+    }, 700);
+
+    return () => window.clearInterval(timer);
+  }, [currentTrack?.id, currentTrack?.source, playing]);
+
   const statusLabel = useMemo(() => {
     if (healthLoading) return 'Verification';
     if (health?.apiReachable && health.cloudStorageAvailable && hasYoutubeKey) return 'Cloud + YouTube prets';
@@ -1739,12 +1789,7 @@ export default function App() {
           if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
         onEnded={() => {
-          setPlaying(false);
-          if (repeatEnabledRef.current && currentTrackRef.current) {
-            void playTrack(currentTrackRef.current, queueRef.current, queueIndexRef.current, { skipProbe: true });
-          } else {
-            playOffset(1, { skipProbe: true });
-          }
+          advanceFromPlaybackEnd();
         }}
         onError={(event) => {
           setPlaying(false);
@@ -1763,7 +1808,7 @@ export default function App() {
         }}
         onPause={() => setPlaying(false)}
         onPlay={() => setPlaying(true)}
-        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime || 0)}
+        onTimeUpdate={(event) => syncCloudPlaybackTime(event.currentTarget)}
       />
 
       {user && (
@@ -2437,11 +2482,10 @@ export default function App() {
                               )}
                               <button className="playlist-row-cover" onClick={() => playTrack(track, activePlaylist.tracks, index)} type="button">
                                 {track.thumbnail ? <img src={track.thumbnail} alt="" loading="lazy" /> : <span />}
-                                <i>{currentTrack?.id === track.id && playing ? <Pause size={17} /> : <Play size={17} />}</i>
+                                <i>{currentTrack?.id === track.id && playing ? <PlayingBars className="cover-playing-bars" /> : <Play size={17} />}</i>
                               </button>
                               <div className="playlist-row-copy">
                                 <div className="playlist-row-title-line">
-                                  {currentTrack?.id === track.id && playing && <PlayingBars />}
                                   <h3>{track.title}</h3>
                                 </div>
                                 <p>{track.channel}</p>
@@ -2529,11 +2573,10 @@ export default function App() {
                             )}
                             <button className="cover-button" onClick={() => playTrack(track, visibleTracks, index)} type="button">
                               {track.thumbnail ? <img src={track.thumbnail} alt="" loading="lazy" /> : <span />}
-                              <i>{currentTrack?.id === track.id && playing ? <Pause size={22} /> : <Play size={22} />}</i>
+                              <i>{currentTrack?.id === track.id && playing ? <PlayingBars className="cover-playing-bars" /> : <Play size={22} />}</i>
                             </button>
                             <div className="track-copy">
                               <div className="track-title-line">
-                                {currentTrack?.id === track.id && playing && <PlayingBars />}
                                 <h2>{track.title}</h2>
                               </div>
                               <p>{track.channel}</p>
@@ -2590,10 +2633,10 @@ export default function App() {
               ) : (
                 <div className="empty-cover" />
               )}
+              {currentTrack && playing && <PlayingBars className="cover-playing-bars" />}
             </div>
             <div className="now-playing-copy">
               <div className="now-title-line">
-                {currentTrack && playing && <PlayingBars />}
                 <strong>{currentTrack?.title || 'Aucun titre'}</strong>
               </div>
               <span>{currentTrack?.channel || 'Flowify'}</span>
@@ -2616,24 +2659,21 @@ export default function App() {
             <button aria-label="Repeter" className={repeatEnabled ? 'active' : ''} onClick={() => setRepeatEnabled((enabled) => !enabled)} type="button">
               <Repeat size={19} />
             </button>
-            <div className="volume-menu">
+            <div className={volumeOpen ? 'volume-menu open' : 'volume-menu'}>
               <button aria-label="Volume" className={volumeOpen ? 'active' : ''} onClick={() => setVolumeOpen((open) => !open)} type="button">
                 <Volume2 size={20} />
               </button>
-              {volumeOpen && (
-                <div className="volume-popover">
-                  <input
-                    aria-label="Volume"
-                    max="1"
-                    min="0"
-                    onChange={(event) => setVolume(Number(event.target.value))}
-                    step="0.01"
-                    type="range"
-                    value={volume}
-                  />
-                  <span>{Math.round(volume * 100)}%</span>
-                </div>
-              )}
+              <input
+                aria-label="Volume"
+                className="volume-slider"
+                max="1"
+                min="0"
+                onChange={(event) => setVolume(Number(event.target.value))}
+                step="0.01"
+                style={{ background: `linear-gradient(to right, var(--green) 0%, var(--green) ${Math.round(volume * 100)}%, #4c4c4c ${Math.round(volume * 100)}%, #4c4c4c 100%)` }}
+                type="range"
+                value={volume}
+              />
             </div>
           </div>
 
