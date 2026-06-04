@@ -49,6 +49,7 @@ import {
   clearYoutubeApiKey,
   clearFlowifyApiBaseUrl,
   cloudStreamUrl,
+  createCloudQueueStream,
   deleteCloudTrackObject,
   downloadTrack,
   getFlowifyApiBaseUrl,
@@ -163,6 +164,7 @@ export default function App() {
   const repeatEnabledRef = useRef(false);
   const autoAdvanceLockRef = useRef(false);
   const nativeAudioActiveRef = useRef(false);
+  const pwaCloudQueueStreamActiveRef = useRef(false);
   const youtubeContainerRef = useRef<HTMLDivElement | null>(null);
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const youtubeProgressTimerRef = useRef<number | null>(null);
@@ -1577,6 +1579,7 @@ export default function App() {
   const playTrack = async (track: Track, list = visibleTracks, index = 0, options: PlayTrackOptions = {}) => {
     const audio = audioRef.current;
     autoAdvanceLockRef.current = false;
+    pwaCloudQueueStreamActiveRef.current = false;
 
     setCurrentTrack(track);
     currentTrackRef.current = track;
@@ -1626,6 +1629,7 @@ export default function App() {
       audio.pause();
       audio.removeAttribute('src');
       nativeAudioActiveRef.current = true;
+      pwaCloudQueueStreamActiveRef.current = false;
       try {
         await playNativeAudioQueue({
           index,
@@ -1647,6 +1651,39 @@ export default function App() {
       nativeAudioActiveRef.current = false;
       void stopNativeAudio();
     }
+
+    const pwaQueueTracks = getPwaCloudQueueTracks(list, index, shuffleEnabledRef.current);
+    if (pwaQueueTracks.length > 1) {
+      const queueStartTrack = pwaQueueTracks[0];
+      setCurrentTrack(queueStartTrack);
+      currentTrackRef.current = queueStartTrack;
+      setQueue(pwaQueueTracks);
+      setQueueIndex(0);
+      queueRef.current = pwaQueueTracks;
+      queueIndexRef.current = 0;
+      setDuration(parseDisplayDuration(queueStartTrack.duration));
+      setMessage('Preparation file Cloud PWA...');
+
+      try {
+        const stream = await createCloudQueueStream(pwaQueueTracks);
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.preload = 'auto';
+        audio.volume = volume;
+        audio.src = stream.url;
+        audio.load();
+        pwaCloudQueueStreamActiveRef.current = true;
+        setMessage('');
+        await audio.play();
+        setPlaying(true);
+      } catch (error) {
+        pwaCloudQueueStreamActiveRef.current = false;
+        setPlaying(false);
+        setMessage(errorMessage(error));
+      }
+      return;
+    }
+
     if (!options.skipProbe) {
       setMessage('Preparation audio Cloud...');
       try {
@@ -1778,6 +1815,7 @@ export default function App() {
     const nextDuration = audio.duration;
     if (Number.isFinite(nextDuration) && nextDuration > 0) {
       setDuration(nextDuration);
+      if (pwaCloudQueueStreamActiveRef.current) return;
       if (!audio.paused && nextDuration - nextTime <= 0.35 && hasNextPlaybackTarget()) {
         advanceFromPlaybackEnd();
       }
@@ -1850,6 +1888,11 @@ export default function App() {
       const audio = audioRef.current;
       if (!audio) return;
       if (audio.ended) {
+        if (pwaCloudQueueStreamActiveRef.current) {
+          pwaCloudQueueStreamActiveRef.current = false;
+          setPlaying(false);
+          return;
+        }
         advanceFromPlaybackEnd();
         return;
       }
@@ -1890,6 +1933,11 @@ export default function App() {
           if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
         onEnded={() => {
+          if (pwaCloudQueueStreamActiveRef.current) {
+            pwaCloudQueueStreamActiveRef.current = false;
+            setPlaying(false);
+            return;
+          }
           advanceFromPlaybackEnd();
         }}
         onError={(event) => {
@@ -3006,6 +3054,30 @@ function getPlaylistStartIndex(length: number, shuffle: boolean) {
   if (length <= 0) return 0;
   if (!shuffle || length === 1) return 0;
   return 1 + Math.floor(Math.random() * (length - 1));
+}
+
+function getPwaCloudQueueTracks(list: Track[], index: number, shuffle: boolean) {
+  if (list.length < 2 || list.some((track) => track.source !== 'cloud' || !track.storageKey)) {
+    return [];
+  }
+
+  const startIndex = Math.min(Math.max(index, 0), list.length - 1);
+  if (!shuffle) {
+    return list.slice(startIndex);
+  }
+
+  const current = list[startIndex];
+  const rest = list.filter((_, itemIndex) => itemIndex !== startIndex);
+  return [current, ...shuffleTrackList(rest)];
+}
+
+function shuffleTrackList(tracks: Track[]) {
+  const copy = [...tracks];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
 }
 
 async function extractEmbeddedCover(file: File) {

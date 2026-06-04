@@ -19,8 +19,14 @@ self.addEventListener('fetch', (event) => {
   const isSameOrigin = url.origin === self.location.origin;
   const isNavigation = request.mode === 'navigate' || request.destination === 'document';
   const isAppShell = isSameOrigin && (isNavigation || url.pathname.endsWith('/index.html'));
+  const isFreshAppAsset = isSameOrigin && (
+    url.pathname.endsWith('/assets/index.js') ||
+    url.pathname.endsWith('/assets/index.css') ||
+    url.pathname.endsWith('/flowify-config.json') ||
+    url.pathname.endsWith('/manifest.webmanifest')
+  );
 
-  if (!isAppShell) return;
+  if (!isAppShell && !isFreshAppAsset) return;
 
   event.respondWith(
     fetch(new Request(request, { cache: 'no-store' })).catch(() => fetch(request)),

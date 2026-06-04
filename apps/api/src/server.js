@@ -39,6 +39,8 @@ const staticDir = path.resolve(
 );
 
 const streamBuilds = new Map();
+const cloudQueueStreams = new Map();
+const cloudQueueStreamTtlMs = 2 * 60 * 60 * 1000;
 const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
 let r2ClientInstance = null;
 
@@ -244,6 +246,38 @@ app.get('/api/cloud/stream', async (req, res, next) => {
       return;
     }
     Readable.fromWeb(object.Body.transformToWebStream()).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/cloud/queue-streams', async (req, res, next) => {
+  try {
+    if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+    const tracks = normalizeCloudQueue(req.body?.tracks);
+    const id = randomUUID();
+    cleanupCloudQueueStreams();
+    cloudQueueStreams.set(id, {
+      createdAt: Date.now(),
+      tracks,
+    });
+    res.json({
+      id,
+      url: `/api/cloud/queue-streams/${encodeURIComponent(id)}`,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
+  try {
+    if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+    cleanupCloudQueueStreams();
+    const queue = cloudQueueStreams.get(String(req.params.id || ''));
+    if (!queue) throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
+
+    await streamCloudQueue(queue.tracks, req, res);
   } catch (err) {
     next(err);
   }
@@ -595,6 +629,146 @@ function getR2Endpoint() {
 function publicR2Url(key) {
   if (!r2PublicBaseUrl) return '';
   return `${r2PublicBaseUrl}/${key.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function normalizeCloudQueue(value) {
+  const rawTracks = Array.isArray(value) ? value : [];
+  const tracks = rawTracks
+    .slice(0, 200)
+    .map((track) => ({
+      contentType: normalizeContentType(track?.contentType || 'audio/mpeg'),
+      key: ensureCloudKey(String(track?.key || track?.storageKey || '')),
+      title: String(track?.title || '').slice(0, 160),
+    }));
+
+  if (!tracks.length) throw httpError(400, 'File Cloud vide');
+  return tracks;
+}
+
+function cleanupCloudQueueStreams() {
+  const now = Date.now();
+  for (const [id, queue] of cloudQueueStreams.entries()) {
+    if (now - queue.createdAt > cloudQueueStreamTtlMs) {
+      cloudQueueStreams.delete(id);
+    }
+  }
+}
+
+async function streamCloudQueue(tracks, req, res) {
+  let closedByClient = false;
+  req.on('close', () => {
+    closedByClient = true;
+  });
+
+  const firstObject = await getR2Client().send(new GetObjectCommand({
+    Bucket: r2Bucket,
+    Key: tracks[0].key,
+  }));
+
+  res.status(200);
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Accept-Ranges', 'none');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.flushHeaders?.();
+
+  try {
+    if (firstObject.Body) {
+      await transcodeCloudObjectToResponse(firstObject.Body, res);
+    }
+
+    for (const track of tracks.slice(1)) {
+      if (closedByClient || res.destroyed || res.writableEnded) return;
+      const object = await getR2Client().send(new GetObjectCommand({
+        Bucket: r2Bucket,
+        Key: track.key,
+      }));
+      if (!object.Body) continue;
+      await transcodeCloudObjectToResponse(object.Body, res);
+    }
+  } catch (error) {
+    res.destroy(error);
+    return;
+  }
+
+  if (!res.destroyed && !res.writableEnded) res.end();
+}
+
+async function transcodeCloudObjectToResponse(body, res) {
+  const input = await cloudBodyToReadable(body);
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn(ffmpegPath, [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-nostdin',
+      '-i',
+      'pipe:0',
+      '-vn',
+      '-codec:a',
+      'libmp3lame',
+      '-b:a',
+      '160k',
+      '-f',
+      'mp3',
+      'pipe:1',
+    ], { windowsHide: true });
+
+    let stderr = '';
+    let settled = false;
+    const onResponseClose = () => {
+      ffmpeg.kill('SIGTERM');
+      finish();
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      res.off?.('close', onResponseClose);
+      input.destroy?.();
+      if (error) reject(error);
+      else resolve();
+    };
+
+    input.on?.('error', (error) => {
+      ffmpeg.stdin.destroy(error);
+    });
+    res.once('close', onResponseClose);
+    ffmpeg.stdin.on('error', () => undefined);
+    ffmpeg.stdout.on('error', (error) => {
+      finish(res.destroyed ? undefined : error);
+    });
+    ffmpeg.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    ffmpeg.on('error', (error) => {
+      finish(httpError(500, `ffmpeg failed to start: ${error.message}`));
+    });
+    ffmpeg.on('close', (code) => {
+      if (res.destroyed || res.writableEnded) {
+        finish();
+        return;
+      }
+      if (code !== 0) {
+        finish(httpError(502, `ffmpeg exited with code ${code}: ${stderr}`));
+        return;
+      }
+      finish();
+    });
+
+    input.pipe(ffmpeg.stdin);
+    ffmpeg.stdout.pipe(res, { end: false });
+  });
+}
+
+async function cloudBodyToReadable(body) {
+  if (typeof body.pipe === 'function') return body;
+  if (typeof body.transformToWebStream === 'function') {
+    return Readable.fromWeb(body.transformToWebStream());
+  }
+  if (typeof body.transformToByteArray === 'function') {
+    return Readable.from(Buffer.from(await body.transformToByteArray()));
+  }
+  return Readable.from([]);
 }
 
 function ensureCloudKey(value) {

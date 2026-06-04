@@ -174,6 +174,36 @@ export async function deleteCloudTrackObject(storageKey: string): Promise<void> 
   if (!response.ok) throw new Error(payload?.error || `Erreur suppression Cloud ${response.status}`);
 }
 
+export async function createCloudQueueStream(tracks: Track[]): Promise<{ id: string; url: string }> {
+  await detectApiHealth();
+  if (!flowifyApiBase) {
+    throw new Error('Lecture Cloud PWA indisponible: configure URL API Flowify.');
+  }
+
+  const queueTracks = tracks
+    .filter((track) => track.source === 'cloud' && track.storageKey)
+    .map((track) => ({
+      contentType: track.contentType || 'audio/mpeg',
+      key: track.storageKey,
+      title: track.title,
+    }));
+
+  if (!queueTracks.length) throw new Error('File Cloud vide.');
+
+  const response = await fetch(apiUrl('/api/cloud/queue-streams'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tracks: queueTracks }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `Erreur file Cloud ${response.status}`);
+
+  return {
+    id: String(payload.id || ''),
+    url: apiUrl(String(payload.url || '')),
+  };
+}
+
 export function streamUrl(track: Track | string): string {
   if (!flowifyApiBase) return '';
   const videoId = typeof track === 'string' ? track : track.id;
