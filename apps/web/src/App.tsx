@@ -14,8 +14,9 @@ import {
   LogIn,
   LogOut,
   Menu,
+  MoreHorizontal,
   Pause,
-  Pencil,
+  Palette,
   Play,
   Plus,
   Repeat,
@@ -30,6 +31,7 @@ import {
   Trash2,
   UserMinus,
   UserPlus,
+  Users,
   Volume2,
   X,
   Youtube,
@@ -77,6 +79,7 @@ import type {
 type ViewMode = 'home' | 'search' | 'cloud' | 'playlists' | 'settings';
 type AuthMode = 'signin' | 'signup' | 'reset';
 type TrackSelectionMode = 'cloud' | 'playlist' | null;
+type PlaylistPanel = 'members' | 'customize' | null;
 type PlayTrackOptions = {
   skipProbe?: boolean;
 };
@@ -172,7 +175,6 @@ export default function App() {
   const [profileBusy, setProfileBusy] = useState(false);
   const [activePlaylistId, setActivePlaylistId] = useState('');
   const [playlistNameDraft, setPlaylistNameDraft] = useState('');
-  const [playlistNameEditing, setPlaylistNameEditing] = useState(false);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
@@ -205,6 +207,8 @@ export default function App() {
   const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
   const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = useState<TrackSelectionMode>(null);
+  const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false);
+  const [playlistPanel, setPlaylistPanel] = useState<PlaylistPanel>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [installPrompt, setInstallPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
@@ -237,6 +241,7 @@ export default function App() {
     activePlaylist.tracks.some((track) => track.id === currentTrack.id),
   );
   const activePlaylistPlaying = Boolean(activePlaylistIsCurrent && playing);
+  const playbackProgress = duration > 0 ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0;
   const currentSelectionMode = view === 'cloud' ? 'cloud' : view === 'playlists' ? 'playlist' : null;
   const selectionActive = Boolean(currentSelectionMode && selectionMode === currentSelectionMode);
   const selectableTracks = useMemo(() => {
@@ -275,7 +280,8 @@ export default function App() {
 
   useEffect(() => {
     setPlaylistNameDraft(activePlaylist?.name || '');
-    setPlaylistNameEditing(false);
+    setPlaylistMenuOpen(false);
+    setPlaylistPanel(null);
   }, [activePlaylist?.id, activePlaylist?.name]);
 
   useEffect(() => {
@@ -1145,7 +1151,6 @@ export default function App() {
       return;
     }
     if (cleanName === activePlaylist.name) {
-      setPlaylistNameEditing(false);
       return;
     }
 
@@ -1157,7 +1162,6 @@ export default function App() {
         next_name: cleanName,
       });
       if (error) throw error;
-      setPlaylistNameEditing(false);
       await loadPlaylists(user);
       setMessage('Playlist renommee.');
     } catch (error) {
@@ -2191,34 +2195,11 @@ export default function App() {
                           )}
                           <PlaylistCover playlist={activePlaylist} />
                           <div className="playlist-hero-copy">
-                            {playlistNameEditing ? (
-                              <form className="playlist-title-form" onSubmit={renamePlaylist}>
-                                <input
-                                  value={playlistNameDraft}
-                                  onChange={(event) => setPlaylistNameDraft(event.target.value)}
-                                  maxLength={80}
-                                  autoFocus
-                                />
-                                <button aria-label="Sauvegarder le nom" disabled={playlistBusy || !playlistNameDraft.trim()} type="submit">
-                                  <Check size={18} />
-                                </button>
-                                <button aria-label="Annuler" onClick={() => {
-                                  setPlaylistNameDraft(activePlaylist.name);
-                                  setPlaylistNameEditing(false);
-                                }} type="button">
-                                  <X size={18} />
-                                </button>
-                              </form>
-                            ) : (
-                              <div className="playlist-title-row">
-                                <h2>{activePlaylist.name}</h2>
-                                {activePlaylistCanManage && (
-                                  <button aria-label="Renommer la playlist" onClick={() => setPlaylistNameEditing(true)} type="button">
-                                    <Pencil size={18} />
-                                  </button>
-                                )}
-                              </div>
-                            )}
+                            <span className="playlist-type">
+                              <ListMusic size={15} />
+                              Playlist Flowify
+                            </span>
+                            <h2>{activePlaylist.name}</h2>
                             <p>
                               {activePlaylist.tracks.length} titre{activePlaylist.tracks.length > 1 ? 's' : ''} - {activePlaylist.memberCount} membre{activePlaylist.memberCount > 1 ? 's' : ''}
                             </p>
@@ -2239,60 +2220,143 @@ export default function App() {
                         </div>
 
                         <div className="playlist-command-bar">
-                          <button
-                            className={activePlaylistPlaying ? 'playlist-play active' : 'playlist-play'}
-                            disabled={!activePlaylist.tracks.length}
-                            onClick={() => {
-                              if (activePlaylistIsCurrent) {
-                                void togglePlay();
-                              } else {
-                                const startIndex = getPlaylistStartIndex(activePlaylist.tracks.length, shuffleEnabled);
-                                void playTrack(activePlaylist.tracks[startIndex], activePlaylist.tracks, startIndex);
-                              }
-                            }}
-                            type="button"
-                          >
-                            {activePlaylistPlaying ? <Pause size={24} /> : <Play size={24} />}
-                          </button>
-                          {activePlaylistCanEdit && (
-                            <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
-                              {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
-                              Upload Cloud
-                              <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFileToPlaylist} type="file" />
-                            </label>
-                          )}
-                          {activePlaylistCanManage && (
-                            <label className={playlistBusy ? 'cover-upload-action disabled' : 'cover-upload-action'}>
-                              <ImageIcon size={16} />
-                              {activePlaylist.coverUrl ? 'Changer photo' : 'Photo playlist'}
-                              <input accept="image/*" disabled={playlistBusy} onChange={selectPlaylistCover} type="file" />
-                            </label>
-                          )}
-                          <button className="code-pill" onClick={() => copyInviteCode(activePlaylist)} type="button">
-                            <Copy size={16} />
-                            {activePlaylist.inviteCode}
-                          </button>
-                          {activePlaylistCanEdit && activePlaylist.tracks.length > 0 && (
-                            <button className="danger-action subtle-danger" disabled={playlistBusy} onClick={() => startTrackSelection('playlist')} type="button">
-                              <ListChecks size={16} />
-                              Retirer
+                          <div className="playlist-primary-actions">
+                            <button
+                              className={activePlaylistPlaying ? 'playlist-play active' : 'playlist-play'}
+                              disabled={!activePlaylist.tracks.length}
+                              onClick={() => {
+                                if (activePlaylistIsCurrent) {
+                                  void togglePlay();
+                                } else {
+                                  const startIndex = getPlaylistStartIndex(activePlaylist.tracks.length, shuffleEnabled);
+                                  void playTrack(activePlaylist.tracks[startIndex], activePlaylist.tracks, startIndex);
+                                }
+                              }}
+                              type="button"
+                            >
+                              {activePlaylistPlaying ? <Pause size={24} /> : <Play size={24} />}
                             </button>
-                          )}
-                          {activePlaylistCanManage && (
-                            <>
-                              <button className="muted-action" disabled={playlistBusy} onClick={() => regenerateInviteCode(activePlaylist)} type="button">
-                                Generer un code
+                            {playlistHeroImage(activePlaylist) && (
+                              <button className="playlist-mini-cover" onClick={() => {
+                                const startIndex = getPlaylistStartIndex(activePlaylist.tracks.length, shuffleEnabled);
+                                if (activePlaylist.tracks[startIndex]) void playTrack(activePlaylist.tracks[startIndex], activePlaylist.tracks, startIndex);
+                              }} type="button">
+                                <img src={playlistHeroImage(activePlaylist)} alt="" loading="lazy" />
                               </button>
-                              <button className="danger-action" disabled={playlistBusy} onClick={() => deletePlaylist(activePlaylist)} type="button">
-                                <Trash2 size={16} />
-                                Supprimer
-                              </button>
-                            </>
-                          )}
+                            )}
+                            <button
+                              aria-label="Aleatoire playlist"
+                              className={shuffleEnabled ? 'playlist-icon-action active' : 'playlist-icon-action'}
+                              onClick={() => setShuffleEnabled((enabled) => !enabled)}
+                              type="button"
+                            >
+                              <Shuffle size={22} />
+                            </button>
+                            {activePlaylistCanEdit && (
+                              <label className={cloudUploadBusy ? 'upload-action disabled' : 'upload-action'}>
+                                {cloudUploadBusy ? <Loader2 className="spin" size={18} /> : <Cloud size={18} />}
+                                Upload Cloud
+                                <input accept="audio/*" disabled={cloudUploadBusy} multiple onChange={uploadCloudFileToPlaylist} type="file" />
+                              </label>
+                            )}
+                          </div>
+                          <div className="playlist-more-wrap">
+                            <button
+                              aria-label="Options playlist"
+                              className={playlistMenuOpen ? 'playlist-more-button active' : 'playlist-more-button'}
+                              onClick={() => setPlaylistMenuOpen((open) => !open)}
+                              type="button"
+                            >
+                              <MoreHorizontal size={24} />
+                            </button>
+                            {playlistMenuOpen && (
+                              <div className="playlist-more-menu">
+                                <button onClick={() => {
+                                  copyInviteCode(activePlaylist);
+                                  setPlaylistMenuOpen(false);
+                                }} type="button">
+                                  <Copy size={17} />
+                                  <span>Copier code</span>
+                                  <small>{activePlaylist.inviteCode}</small>
+                                </button>
+                                <button onClick={() => {
+                                  setPlaylistPanel((panel) => (panel === 'members' ? null : 'members'));
+                                  setPlaylistMenuOpen(false);
+                                }} type="button">
+                                  <Users size={17} />
+                                  <span>Membres</span>
+                                </button>
+                                {activePlaylistCanManage && (
+                                  <button onClick={() => {
+                                    setPlaylistPanel((panel) => (panel === 'customize' ? null : 'customize'));
+                                    setPlaylistMenuOpen(false);
+                                  }} type="button">
+                                    <Palette size={17} />
+                                    <span>Personnaliser</span>
+                                  </button>
+                                )}
+                                {activePlaylistCanEdit && activePlaylist.tracks.length > 0 && (
+                                  <button onClick={() => {
+                                    startTrackSelection('playlist');
+                                    setPlaylistMenuOpen(false);
+                                  }} type="button">
+                                    <ListChecks size={17} />
+                                    <span>Selection titres</span>
+                                  </button>
+                                )}
+                                {activePlaylistCanManage && (
+                                  <button onClick={() => {
+                                    void regenerateInviteCode(activePlaylist);
+                                    setPlaylistMenuOpen(false);
+                                  }} type="button">
+                                    <Sparkles size={17} />
+                                    <span>Generer un code</span>
+                                  </button>
+                                )}
+                                {activePlaylistCanManage && (
+                                  <button className="danger" onClick={() => {
+                                    void deletePlaylist(activePlaylist);
+                                    setPlaylistMenuOpen(false);
+                                  }} type="button">
+                                    <Trash2 size={17} />
+                                    <span>Supprimer</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
 
-                        {activePlaylistCanManage && (
-                          <section className="playlist-admin-panel">
+                        {playlistPanel === 'customize' && activePlaylistCanManage && (
+                          <section className="playlist-panel playlist-customize-panel">
+                            <div className="section-title">
+                              <Palette size={16} />
+                              Personnaliser
+                            </div>
+                            <form className="playlist-customize-form" onSubmit={renamePlaylist}>
+                              <label>
+                                Nom de la playlist
+                                <input
+                                  value={playlistNameDraft}
+                                  onChange={(event) => setPlaylistNameDraft(event.target.value)}
+                                  maxLength={80}
+                                />
+                              </label>
+                              <button className="code-pill" disabled={playlistBusy || !playlistNameDraft.trim() || playlistNameDraft.trim() === activePlaylist.name} type="submit">
+                                <Check size={16} />
+                                Sauvegarder
+                              </button>
+                            </form>
+                            <label className={playlistBusy ? 'playlist-cover-picker disabled' : 'playlist-cover-picker'}>
+                              <ImageIcon size={18} />
+                              <span>{activePlaylist.coverUrl ? 'Changer la photo' : 'Ajouter une photo'}</span>
+                              <input accept="image/*" disabled={playlistBusy} onChange={selectPlaylistCover} type="file" />
+                            </label>
+                          </section>
+                        )}
+
+                        {playlistPanel === 'members' && (
+                          <section className="playlist-panel playlist-admin-panel">
                             <div className="section-title">
                               <Shield size={16} />
                               Membres
@@ -2307,7 +2371,7 @@ export default function App() {
                                   </div>
                                   {member.role === 'owner' ? (
                                     <span className="role-pill">Proprietaire</span>
-                                  ) : (
+                                  ) : activePlaylistCanManage ? (
                                     <>
                                       <select
                                         disabled={playlistBusy}
@@ -2321,6 +2385,8 @@ export default function App() {
                                         <UserMinus size={16} />
                                       </button>
                                     </>
+                                  ) : (
+                                    <span className="role-pill neutral">{roleLabel(member.role)}</span>
                                   )}
                                 </article>
                               ))}
@@ -2374,7 +2440,10 @@ export default function App() {
                                 <i>{currentTrack?.id === track.id && playing ? <Pause size={17} /> : <Play size={17} />}</i>
                               </button>
                               <div className="playlist-row-copy">
-                                <h3>{track.title}</h3>
+                                <div className="playlist-row-title-line">
+                                  {currentTrack?.id === track.id && playing && <PlayingBars />}
+                                  <h3>{track.title}</h3>
+                                </div>
                                 <p>{track.channel}</p>
                                 <AddedByLine track={track} />
                               </div>
@@ -2463,7 +2532,10 @@ export default function App() {
                               <i>{currentTrack?.id === track.id && playing ? <Pause size={22} /> : <Play size={22} />}</i>
                             </button>
                             <div className="track-copy">
-                              <h2>{track.title}</h2>
+                              <div className="track-title-line">
+                                {currentTrack?.id === track.id && playing && <PlayingBars />}
+                                <h2>{track.title}</h2>
+                              </div>
                               <p>{track.channel}</p>
                             </div>
                             <span className="duration">{track.duration || '--:--'}</span>
@@ -2512,13 +2584,18 @@ export default function App() {
       {user && (
         <footer className="player">
           <div className="now-playing">
-            {currentTrack?.thumbnail ? (
-              <img src={currentTrack.thumbnail} alt="" />
-            ) : (
-              <div className="empty-cover" />
-            )}
-            <div>
-              <strong>{currentTrack?.title || 'Aucun titre'}</strong>
+            <div className="now-playing-art">
+              {currentTrack?.thumbnail ? (
+                <img src={currentTrack.thumbnail} alt="" />
+              ) : (
+                <div className="empty-cover" />
+              )}
+            </div>
+            <div className="now-playing-copy">
+              <div className="now-title-line">
+                {currentTrack && playing && <PlayingBars />}
+                <strong>{currentTrack?.title || 'Aucun titre'}</strong>
+              </div>
               <span>{currentTrack?.channel || 'Flowify'}</span>
             </div>
           </div>
@@ -2568,6 +2645,7 @@ export default function App() {
               max={duration || 0}
               step="1"
               value={Math.min(currentTime, duration || 0)}
+              style={{ background: `linear-gradient(to right, var(--green) 0%, var(--green) ${playbackProgress}%, #4c4c4c ${playbackProgress}%, #4c4c4c 100%)` }}
               disabled={!duration}
               onChange={(event) => {
                 const nextTime = Number(event.target.value);
@@ -2723,6 +2801,17 @@ function AddedByLine({ track }: { track: Track }) {
     <span className="added-by-line">
       <ProfileAvatar avatarUrl={addedBy?.avatarUrl} className="added-by-avatar" label={label} />
       Ajoute par {label}
+    </span>
+  );
+}
+
+function PlayingBars({ className = '' }: { className?: string }) {
+  return (
+    <span className={['playing-bars', className].filter(Boolean).join(' ')} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+      <span />
     </span>
   );
 }
