@@ -62,6 +62,18 @@ import {
   searchTracks,
   uploadCloudTrack,
 } from './lib/api';
+import {
+  addNativeAudioStateListener,
+  hasNativeAudio,
+  pauseNativeAudio,
+  playNativeAudio,
+  playNativeAudioQueue,
+  seekNativeAudio,
+  setNativeAudioModes,
+  setNativeAudioVolume,
+  stopNativeAudio,
+  toNativeAudioQueue,
+} from './lib/nativeAudio';
 import { isStandaloneDisplay } from './lib/pwa';
 import { supabase } from './lib/supabase';
 import type {
@@ -150,6 +162,7 @@ export default function App() {
   const shuffleEnabledRef = useRef(false);
   const repeatEnabledRef = useRef(false);
   const autoAdvanceLockRef = useRef(false);
+  const nativeAudioActiveRef = useRef(false);
   const youtubeContainerRef = useRef<HTMLDivElement | null>(null);
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const youtubeProgressTimerRef = useRef<number | null>(null);
@@ -307,6 +320,9 @@ export default function App() {
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
     youtubePlayerRef.current?.setVolume(Math.round(volume * 100));
+    if (nativeAudioActiveRef.current) {
+      void setNativeAudioVolume(volume);
+    }
     localStorage.setItem('flowify.volume', String(volume));
   }, [volume]);
 
@@ -321,6 +337,45 @@ export default function App() {
   useEffect(() => {
     repeatEnabledRef.current = repeatEnabled;
   }, [repeatEnabled]);
+
+  useEffect(() => {
+    if (nativeAudioActiveRef.current) {
+      void setNativeAudioModes(shuffleEnabled, repeatEnabled);
+    }
+  }, [repeatEnabled, shuffleEnabled]);
+
+  useEffect(() => {
+    if (!hasNativeAudio()) return undefined;
+    let removeListener: (() => void) | undefined;
+    void addNativeAudioStateListener((state) => {
+      if (!nativeAudioActiveRef.current) return;
+      if (state.error) setMessage(state.error);
+
+      if (typeof state.index === 'number' && state.index >= 0) {
+        const nativeTrack = queueRef.current[state.index];
+        if (nativeTrack) {
+          currentTrackRef.current = nativeTrack;
+          queueIndexRef.current = state.index;
+          setCurrentTrack(nativeTrack);
+          setQueueIndex(state.index);
+        }
+      }
+
+      setPlaying(Boolean(state.playing));
+      if (typeof state.duration === 'number' && Number.isFinite(state.duration) && state.duration > 0) {
+        setDuration(state.duration);
+      }
+      if (typeof state.currentTime === 'number' && Number.isFinite(state.currentTime)) {
+        setCurrentTime(state.currentTime);
+      }
+    }).then((remove) => {
+      removeListener = remove;
+    });
+
+    return () => {
+      removeListener?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -1524,6 +1579,7 @@ export default function App() {
     autoAdvanceLockRef.current = false;
 
     setCurrentTrack(track);
+    currentTrackRef.current = track;
     setQueue(list);
     setQueueIndex(index);
     queueRef.current = list;
@@ -1534,6 +1590,10 @@ export default function App() {
 
     const isCloudTrack = track.source === 'cloud';
     if (!isCloudTrack) {
+      if (nativeAudioActiveRef.current) {
+        nativeAudioActiveRef.current = false;
+        void stopNativeAudio();
+      }
       audio?.pause();
       audio?.removeAttribute('src');
       setYoutubeVideoId(track.id);
@@ -1557,6 +1617,35 @@ export default function App() {
       setPlaying(false);
       setMessage('Fichier Cloud introuvable.');
       return;
+    }
+
+    const nativeQueue = hasNativeAudio() && list.every((item) => item.source === 'cloud')
+      ? toNativeAudioQueue(list)
+      : null;
+    if (nativeQueue) {
+      audio.pause();
+      audio.removeAttribute('src');
+      nativeAudioActiveRef.current = true;
+      try {
+        await playNativeAudioQueue({
+          index,
+          repeat: repeatEnabledRef.current,
+          shuffle: shuffleEnabledRef.current,
+          tracks: nativeQueue,
+          volume,
+        });
+        setPlaying(true);
+      } catch (error) {
+        nativeAudioActiveRef.current = false;
+        setPlaying(false);
+        setMessage(errorMessage(error));
+      }
+      return;
+    }
+
+    if (nativeAudioActiveRef.current) {
+      nativeAudioActiveRef.current = false;
+      void stopNativeAudio();
     }
     if (!options.skipProbe) {
       setMessage('Preparation audio Cloud...');
@@ -1592,7 +1681,9 @@ export default function App() {
 
   const seekCurrentTrack = (nextTime: number) => {
     try {
-      if (currentTrack?.source !== 'cloud') {
+      if (currentTrack?.source === 'cloud' && nativeAudioActiveRef.current) {
+        void seekNativeAudio(nextTime);
+      } else if (currentTrack?.source !== 'cloud') {
         youtubePlayerRef.current?.seekTo(nextTime, true);
       } else if (audioRef.current) {
         audioRef.current.currentTime = nextTime;
@@ -1617,6 +1708,16 @@ export default function App() {
         player.playVideo();
         setPlaying(true);
         startYouTubeProgress();
+      }
+      return;
+    }
+    if (nativeAudioActiveRef.current) {
+      if (playing) {
+        await pauseNativeAudio();
+        setPlaying(false);
+      } else {
+        await playNativeAudio();
+        setPlaying(true);
       }
       return;
     }
@@ -1744,7 +1845,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!playing || currentTrack?.source !== 'cloud') return undefined;
+    if (!playing || currentTrack?.source !== 'cloud' || nativeAudioActiveRef.current) return undefined;
     const timer = window.setInterval(() => {
       const audio = audioRef.current;
       if (!audio) return;
