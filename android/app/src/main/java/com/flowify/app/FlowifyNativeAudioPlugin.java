@@ -1,7 +1,19 @@
 package com.flowify.app;
 
+import android.Manifest;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
+import android.media.MediaMetadata;
 import android.media.MediaPlayer;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -19,8 +31,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
 @CapacitorPlugin(name = "FlowifyNativeAudio")
 public class FlowifyNativeAudioPlugin extends Plugin {
+    private static final String NOTIFICATION_CHANNEL_ID = "flowify_playback";
+    private static final int NOTIFICATION_ID = 1001;
+
     private static class AudioTrack {
         String artist;
         String id;
@@ -37,10 +55,13 @@ public class FlowifyNativeAudioPlugin extends Plugin {
     private boolean repeat = false;
     private boolean shuffle = false;
     private float volume = 1f;
+    private MediaSession mediaSession;
+    private NotificationManager notificationManager;
 
     private final Runnable progressTick = new Runnable() {
         @Override
         public void run() {
+            updateMediaSessionState();
             notifyState(null);
             if (player != null && player.isPlaying()) {
                 handler.postDelayed(this, 1000);
@@ -96,6 +117,8 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         if (player != null && prepared) {
             player.start();
             startProgress();
+            updateMediaSessionState();
+            showPlaybackNotification();
             notifyState(null);
         }
         call.resolve();
@@ -106,6 +129,8 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         if (player != null && prepared && player.isPlaying()) {
             player.pause();
         }
+        updateMediaSessionState();
+        showPlaybackNotification();
         notifyState(null);
         call.resolve();
     }
@@ -115,6 +140,8 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         releasePlayer();
         queue.clear();
         currentIndex = -1;
+        cancelPlaybackNotification();
+        updateMediaSessionState();
         notifyState(null);
         call.resolve();
     }
@@ -141,6 +168,8 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         if (player != null && prepared) {
             int positionMs = (int) Math.max(0, call.getDouble("position", 0.0) * 1000);
             player.seekTo(positionMs);
+            updateMediaSessionState();
+            showPlaybackNotification();
             notifyState(null);
         }
         call.resolve();
@@ -171,12 +200,176 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         return (float) Math.max(0, Math.min(1, nextVolume));
     }
 
+    private void ensureMediaSession() {
+        requestNotificationPermissionIfNeeded();
+        if (mediaSession != null) return;
+        mediaSession = new MediaSession(getContext(), "Flowify");
+        mediaSession.setCallback(new MediaSession.Callback() {
+            @Override
+            public void onPlay() {
+                if (player != null && prepared) {
+                    player.start();
+                    startProgress();
+                    updateMediaSessionState();
+                    showPlaybackNotification();
+                    notifyState(null);
+                }
+            }
+
+            @Override
+            public void onPause() {
+                if (player != null && prepared && player.isPlaying()) {
+                    player.pause();
+                }
+                updateMediaSessionState();
+                showPlaybackNotification();
+                notifyState(null);
+            }
+
+            @Override
+            public void onSkipToNext() {
+                playNext(false);
+            }
+
+            @Override
+            public void onSkipToPrevious() {
+                if (!queue.isEmpty()) {
+                    loadIndex(Math.max(0, currentIndex - 1), true);
+                }
+            }
+
+            @Override
+            public void onSeekTo(long pos) {
+                if (player != null && prepared) {
+                    player.seekTo((int) Math.max(0, pos));
+                    updateMediaSessionState();
+                    showPlaybackNotification();
+                    notifyState(null);
+                }
+            }
+        });
+        mediaSession.setActive(true);
+        updateMediaSessionState();
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || getActivity() == null) return;
+        Context context = getContext();
+        if (context == null) return;
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        ActivityCompat.requestPermissions(
+                getActivity(),
+                new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                4101
+        );
+    }
+
+    private void updateMediaSessionMetadata(AudioTrack track) {
+        if (mediaSession == null || track == null) return;
+        mediaSession.setMetadata(new MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, track.title)
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, track.artist)
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, "Flowify")
+                .build());
+    }
+
+    private void updateMediaSessionState() {
+        if (mediaSession == null) return;
+        long actions = PlaybackState.ACTION_PLAY
+                | PlaybackState.ACTION_PAUSE
+                | PlaybackState.ACTION_PLAY_PAUSE
+                | PlaybackState.ACTION_SKIP_TO_NEXT
+                | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                | PlaybackState.ACTION_SEEK_TO;
+        int state = PlaybackState.STATE_NONE;
+        long position = 0;
+        if (player != null) {
+            try {
+                state = prepared && player.isPlaying() ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED;
+                position = prepared ? player.getCurrentPosition() : 0;
+            } catch (Exception ignored) {
+                state = PlaybackState.STATE_NONE;
+            }
+        }
+        mediaSession.setPlaybackState(new PlaybackState.Builder()
+                .setActions(actions)
+                .setState(state, position, 1f)
+                .build());
+    }
+
+    private void showPlaybackNotification() {
+        if (currentIndex < 0 || currentIndex >= queue.size() || mediaSession == null) return;
+        Context context = getContext();
+        if (context == null) return;
+        AudioTrack track = queue.get(currentIndex);
+        NotificationManager manager = getNotificationManager();
+        if (manager == null) return;
+
+        Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        PendingIntent contentIntent = launchIntent == null
+                ? null
+                : PendingIntent.getActivity(
+                context,
+                0,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
+
+        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new Notification.Builder(context, NOTIFICATION_CHANNEL_ID)
+                : new Notification.Builder(context);
+        builder
+                .setSmallIcon(R.drawable.flowify_icon)
+                .setContentTitle(track.title)
+                .setContentText(track.artist)
+                .setCategory(Notification.CATEGORY_TRANSPORT)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setShowWhen(false)
+                .setOngoing(player != null && prepared && player.isPlaying())
+                .setStyle(new Notification.MediaStyle().setMediaSession(mediaSession.getSessionToken()));
+        if (contentIntent != null) {
+            builder.setContentIntent(contentIntent);
+        }
+        manager.notify(NOTIFICATION_ID, builder.build());
+    }
+
+    private NotificationManager getNotificationManager() {
+        if (notificationManager != null) return notificationManager;
+        Context context = getContext();
+        if (context == null) return null;
+        notificationManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && notificationManager != null) {
+            NotificationChannel channel = new NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID,
+                    "Lecture Flowify",
+                    NotificationManager.IMPORTANCE_LOW
+            );
+            channel.setDescription("Lecture audio Flowify");
+            channel.setShowBadge(false);
+            notificationManager.createNotificationChannel(channel);
+        }
+        return notificationManager;
+    }
+
+    private void cancelPlaybackNotification() {
+        NotificationManager manager = getNotificationManager();
+        if (manager != null) {
+            manager.cancel(NOTIFICATION_ID);
+        }
+    }
+
     private void loadIndex(int index, boolean autoplay) {
+        ensureMediaSession();
         releasePlayer();
         currentIndex = index;
         prepared = false;
 
         AudioTrack track = queue.get(index);
+        updateMediaSessionMetadata(track);
+        updateMediaSessionState();
+        showPlaybackNotification();
         MediaPlayer nextPlayer = new MediaPlayer();
         player = nextPlayer;
 
@@ -194,6 +387,8 @@ public class FlowifyNativeAudioPlugin extends Plugin {
                     mediaPlayer.start();
                     startProgress();
                 }
+                updateMediaSessionState();
+                showPlaybackNotification();
                 notifyState(null);
             });
             nextPlayer.setOnCompletionListener(mediaPlayer -> playNext(true));
@@ -226,6 +421,8 @@ public class FlowifyNativeAudioPlugin extends Plugin {
 
         if (nextIndex >= queue.size()) {
             releasePlayer();
+            cancelPlaybackNotification();
+            updateMediaSessionState();
             notifyState(null);
             return;
         }
@@ -294,6 +491,12 @@ public class FlowifyNativeAudioPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         releasePlayer();
+        cancelPlaybackNotification();
+        if (mediaSession != null) {
+            mediaSession.setActive(false);
+            mediaSession.release();
+            mediaSession = null;
+        }
         super.handleOnDestroy();
     }
 }

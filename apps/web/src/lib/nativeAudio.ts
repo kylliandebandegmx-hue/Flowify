@@ -93,6 +93,14 @@ export async function pauseNativeAudio() {
   await getNativeAudioPlugin()?.pause?.();
 }
 
+export async function nextNativeAudio() {
+  await getNativeAudioPlugin()?.next?.();
+}
+
+export async function previousNativeAudio() {
+  await getNativeAudioPlugin()?.previous?.();
+}
+
 export async function stopNativeAudio() {
   await getNativeAudioPlugin()?.stop?.();
 }
