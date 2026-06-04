@@ -77,6 +77,9 @@ import type {
 type ViewMode = 'home' | 'search' | 'cloud' | 'playlists' | 'settings';
 type AuthMode = 'signin' | 'signup' | 'reset';
 type TrackSelectionMode = 'cloud' | 'playlist' | null;
+type PlayTrackOptions = {
+  skipProbe?: boolean;
+};
 
 const THEME_PRIMARY_KEY = 'flowify.theme.primary';
 const THEME_SECONDARY_KEY = 'flowify.theme.secondary';
@@ -140,6 +143,9 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const queueRef = useRef<Track[]>([]);
   const queueIndexRef = useRef(-1);
+  const currentTrackRef = useRef<Track | null>(null);
+  const shuffleEnabledRef = useRef(false);
+  const repeatEnabledRef = useRef(false);
   const youtubeContainerRef = useRef<HTMLDivElement | null>(null);
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const youtubeProgressTimerRef = useRef<number | null>(null);
@@ -298,6 +304,18 @@ export default function App() {
   }, [volume]);
 
   useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  useEffect(() => {
+    shuffleEnabledRef.current = shuffleEnabled;
+  }, [shuffleEnabled]);
+
+  useEffect(() => {
+    repeatEnabledRef.current = repeatEnabled;
+  }, [repeatEnabled]);
+
+  useEffect(() => {
     if (!user) return;
     loadYouTubeIframeApi().catch(() => undefined);
   }, [user]);
@@ -330,13 +348,27 @@ export default function App() {
   }, [currentTrack]);
 
   useEffect(() => {
+    if (!('mediaSession' in navigator) || typeof navigator.mediaSession.setPositionState !== 'function') return;
+    if (!currentTrack || !Number.isFinite(duration) || duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: 1,
+        position: Math.min(currentTime, duration),
+      });
+    } catch {
+      undefined;
+    }
+  }, [currentTime, currentTrack, duration]);
+
+  useEffect(() => {
     if (!('mediaSession' in navigator)) return;
     const sessionApi = navigator.mediaSession;
     const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
       play: () => { void togglePlay(); },
       pause: () => { void togglePlay(); },
-      previoustrack: () => playOffset(-1),
-      nexttrack: () => playOffset(1),
+      previoustrack: () => playOffset(-1, { skipProbe: true }),
+      nexttrack: () => playOffset(1, { skipProbe: true }),
       seekbackward: () => seekCurrentTrack(Math.max(0, currentTime - 10)),
       seekforward: () => seekCurrentTrack(Math.min(duration || currentTime + 10, currentTime + 10)),
     };
@@ -828,12 +860,13 @@ export default function App() {
     let uploadedCount = 0;
     try {
       for (const file of audioFiles) {
+        const embeddedCover = await extractEmbeddedCover(file);
         const uploaded = await uploadCloudTrack(file);
         const track: Track = {
           id: `cloud:${uploaded.key}`,
           title: titleFromFile(uploaded.fileName || file.name),
           channel: 'Cloud Flowify',
-          thumbnail: '',
+          thumbnail: embeddedCover,
           duration: '',
           viewCount: '',
           publishedAt: new Date().toISOString(),
@@ -1465,10 +1498,10 @@ export default function App() {
             if (event.data === api.PlayerState.ENDED) {
               setPlaying(false);
               stopYouTubeProgress();
-              if (repeatEnabled && currentTrack) {
-                void playTrack(currentTrack, queueRef.current, queueIndexRef.current);
+              if (repeatEnabledRef.current && currentTrackRef.current) {
+                void playTrack(currentTrackRef.current, queueRef.current, queueIndexRef.current, { skipProbe: true });
               } else {
-                playOffset(1);
+                playOffset(1, { skipProbe: true });
               }
             }
           },
@@ -1486,7 +1519,7 @@ export default function App() {
     setYoutubeVideoId('');
   };
 
-  const playTrack = async (track: Track, list = visibleTracks, index = 0) => {
+  const playTrack = async (track: Track, list = visibleTracks, index = 0, options: PlayTrackOptions = {}) => {
     const audio = audioRef.current;
 
     setCurrentTrack(track);
@@ -1524,25 +1557,26 @@ export default function App() {
       setMessage('Fichier Cloud introuvable.');
       return;
     }
-    setMessage('Preparation audio Cloud...');
-
-    try {
-      await probeAudioSource(source);
-      setMessage('');
-      getHealth().then((nextHealth) => {
-        setHealth(nextHealth);
-        setHasFlowifyApi(hasYtdlpAudioApi());
-        setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
-      }).catch(() => undefined);
-    } catch (error) {
-      setPlaying(false);
-      setMessage(errorMessage(error));
-      return;
+    if (!options.skipProbe) {
+      setMessage('Preparation audio Cloud...');
+      try {
+        await probeAudioSource(source);
+        setMessage('');
+        getHealth().then((nextHealth) => {
+          setHealth(nextHealth);
+          setHasFlowifyApi(hasYtdlpAudioApi());
+          setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
+        }).catch(() => undefined);
+      } catch (error) {
+        setPlaying(false);
+        setMessage(errorMessage(error));
+        return;
+      }
     }
 
     audio.pause();
     audio.removeAttribute('src');
-    audio.preload = 'metadata';
+    audio.preload = 'auto';
     audio.volume = volume;
     audio.src = source;
     audio.load();
@@ -1595,20 +1629,21 @@ export default function App() {
     }
   };
 
-  const playOffset = (offset: number) => {
+  const playOffset = (offset: number, options: PlayTrackOptions = {}) => {
     const activeQueue = queueRef.current.length ? queueRef.current : queue;
     const activeIndex = queueRef.current.length ? queueIndexRef.current : queueIndex;
     if (!activeQueue.length) return;
     let nextIndex = activeIndex + offset;
-    if (shuffleEnabled && offset > 0 && activeQueue.length > 1) {
+    if (shuffleEnabledRef.current && offset > 0 && activeQueue.length > 1) {
       do {
         nextIndex = Math.floor(Math.random() * activeQueue.length);
       } while (nextIndex === activeIndex);
     }
-    if (nextIndex < 0) nextIndex = repeatEnabled ? activeQueue.length - 1 : -1;
-    if (nextIndex >= activeQueue.length) nextIndex = repeatEnabled ? 0 : activeQueue.length;
+    const shouldRepeat = repeatEnabledRef.current;
+    if (nextIndex < 0) nextIndex = shouldRepeat ? activeQueue.length - 1 : -1;
+    if (nextIndex >= activeQueue.length) nextIndex = shouldRepeat ? 0 : activeQueue.length;
     if (nextIndex < 0 || nextIndex >= activeQueue.length) return;
-    playTrack(activeQueue[nextIndex], activeQueue, nextIndex);
+    playTrack(activeQueue[nextIndex], activeQueue, nextIndex, options);
   };
 
   const toggleSave = async (track: Track) => {
@@ -1694,16 +1729,17 @@ export default function App() {
       <audio
         crossOrigin="anonymous"
         ref={audioRef}
+        preload="auto"
         onDurationChange={(event) => {
           const nextDuration = event.currentTarget.duration;
           if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
         onEnded={() => {
           setPlaying(false);
-          if (repeatEnabled && currentTrack) {
-            void playTrack(currentTrack, queueRef.current, queueIndexRef.current);
+          if (repeatEnabledRef.current && currentTrackRef.current) {
+            void playTrack(currentTrackRef.current, queueRef.current, queueIndexRef.current, { skipProbe: true });
           } else {
-            playOffset(1);
+            playOffset(1, { skipProbe: true });
           }
         }}
         onError={(event) => {
@@ -1821,6 +1857,13 @@ export default function App() {
                     <UserPlus size={16} />
                   </button>
                 </form>
+              </div>
+            </section>
+
+            <section className="sidebar-section playlist-list-section">
+              <div className="section-title">
+                <ListMusic size={16} />
+                Mes playlists
               </div>
               <div className="playlist-stack">
                 {playlists.map((playlist) => (
@@ -2203,7 +2246,8 @@ export default function App() {
                               if (activePlaylistIsCurrent) {
                                 void togglePlay();
                               } else {
-                                void playTrack(activePlaylist.tracks[0], activePlaylist.tracks, 0);
+                                const startIndex = getPlaylistStartIndex(activePlaylist.tracks.length, shuffleEnabled);
+                                void playTrack(activePlaylist.tracks[startIndex], activePlaylist.tracks, startIndex);
                               }
                             }}
                             type="button"
@@ -2726,6 +2770,170 @@ function parseDisplayDuration(value: string) {
 function titleFromFile(value: string) {
   const clean = value.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
   return clean || 'Musique Cloud';
+}
+
+function getPlaylistStartIndex(length: number, shuffle: boolean) {
+  if (length <= 0) return 0;
+  if (!shuffle || length === 1) return 0;
+  return 1 + Math.floor(Math.random() * (length - 1));
+}
+
+async function extractEmbeddedCover(file: File) {
+  const isMp3 = file.type === 'audio/mpeg' || /\.(mp3|mpeg)$/i.test(file.name);
+  if (!isMp3) return '';
+
+  try {
+    const buffer = await file.slice(0, Math.min(file.size, 8 * 1024 * 1024)).arrayBuffer();
+    const picture = findId3Picture(new Uint8Array(buffer));
+    if (!picture) return '';
+    const pictureBuffer = new ArrayBuffer(picture.data.byteLength);
+    new Uint8Array(pictureBuffer).set(picture.data);
+    return await resizeArtworkBlob(new Blob([pictureBuffer], { type: picture.mimeType || 'image/jpeg' }));
+  } catch {
+    return '';
+  }
+}
+
+function findId3Picture(bytes: Uint8Array): { mimeType: string; data: Uint8Array } | null {
+  if (bytes.length < 10 || readAscii(bytes, 0, 3) !== 'ID3') return null;
+
+  const version = bytes[3];
+  const flags = bytes[5];
+  const tagEnd = Math.min(bytes.length, 10 + readSynchsafeInteger(bytes, 6));
+  let offset = 10;
+
+  if (flags & 0x40) {
+    const extendedSize = version === 4 ? readSynchsafeInteger(bytes, offset) : readBigEndianInteger(bytes, offset, 4);
+    offset += version === 4 ? extendedSize : extendedSize + 4;
+  }
+
+  while (offset + (version === 2 ? 6 : 10) <= tagEnd) {
+    const frameId = readAscii(bytes, offset, version === 2 ? 3 : 4);
+    if (!frameId.trim() || /^\0+$/.test(frameId)) break;
+
+    const frameSize = version === 2
+      ? readBigEndianInteger(bytes, offset + 3, 3)
+      : version === 4
+        ? readSynchsafeInteger(bytes, offset + 4)
+        : readBigEndianInteger(bytes, offset + 4, 4);
+    const frameStart = offset + (version === 2 ? 6 : 10);
+    const frameEnd = frameStart + frameSize;
+    if (frameSize <= 0 || frameEnd > tagEnd) break;
+
+    if (frameId === 'APIC' || frameId === 'PIC') {
+      const parsed = parsePictureFrame(bytes, frameStart, frameEnd, frameId);
+      if (parsed) return parsed;
+    }
+
+    offset = frameEnd;
+  }
+
+  return null;
+}
+
+function parsePictureFrame(bytes: Uint8Array, start: number, end: number, frameId: string) {
+  if (start >= end) return null;
+  const encoding = bytes[start];
+  let cursor = start + 1;
+  let mimeType = 'image/jpeg';
+
+  if (frameId === 'PIC') {
+    const format = readAscii(bytes, cursor, 3).toLowerCase();
+    mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+    cursor += 3;
+  } else {
+    const mimeEnd = findZeroByte(bytes, cursor, end);
+    if (mimeEnd === -1) return null;
+    mimeType = readAscii(bytes, cursor, mimeEnd - cursor) || mimeType;
+    cursor = mimeEnd + 1;
+  }
+
+  cursor += 1;
+  const terminatorLength = encoding === 1 || encoding === 2 ? 2 : 1;
+  cursor = skipEncodedText(bytes, cursor, end, terminatorLength);
+  if (cursor >= end) return null;
+
+  return {
+    mimeType,
+    data: bytes.slice(cursor, end),
+  };
+}
+
+function skipEncodedText(bytes: Uint8Array, start: number, end: number, terminatorLength: number) {
+  let cursor = start;
+  while (cursor + terminatorLength <= end) {
+    if (
+      (terminatorLength === 1 && bytes[cursor] === 0) ||
+      (terminatorLength === 2 && bytes[cursor] === 0 && bytes[cursor + 1] === 0)
+    ) {
+      return cursor + terminatorLength;
+    }
+    cursor += terminatorLength === 2 ? 2 : 1;
+  }
+  return end;
+}
+
+function findZeroByte(bytes: Uint8Array, start: number, end: number) {
+  for (let index = start; index < end; index += 1) {
+    if (bytes[index] === 0) return index;
+  }
+  return -1;
+}
+
+function readAscii(bytes: Uint8Array, start: number, length: number) {
+  let value = '';
+  for (let index = 0; index < length && start + index < bytes.length; index += 1) {
+    value += String.fromCharCode(bytes[start + index]);
+  }
+  return value;
+}
+
+function readBigEndianInteger(bytes: Uint8Array, start: number, length: number) {
+  let value = 0;
+  for (let index = 0; index < length; index += 1) {
+    value = (value << 8) + (bytes[start + index] || 0);
+  }
+  return value;
+}
+
+function readSynchsafeInteger(bytes: Uint8Array, start: number) {
+  return (
+    ((bytes[start] || 0) & 0x7f) << 21 |
+    ((bytes[start + 1] || 0) & 0x7f) << 14 |
+    ((bytes[start + 2] || 0) & 0x7f) << 7 |
+    ((bytes[start + 3] || 0) & 0x7f)
+  );
+}
+
+function resizeArtworkBlob(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      const size = 320;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        URL.revokeObjectURL(objectUrl);
+        resolve('');
+        return;
+      }
+
+      const ratio = Math.max(size / image.width, size / image.height);
+      const width = image.width * ratio;
+      const height = image.height * ratio;
+      context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+      URL.revokeObjectURL(objectUrl);
+      resolve(canvas.toDataURL('image/jpeg', 0.82));
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve('');
+    };
+    image.src = objectUrl;
+  });
 }
 
 async function probeAudioSource(source: string) {
