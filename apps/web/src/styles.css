@@ -1442,6 +1442,31 @@ button:disabled {
   cursor: pointer;
 }
 
+.settings-card .toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: #0b0c11;
+}
+
+.settings-card .toggle-row input {
+  width: 42px;
+  height: 22px;
+  min-width: 42px;
+  accent-color: var(--green);
+}
+
+.settings-card .toggle-row span {
+  color: var(--text);
+  font-weight: 800;
+}
+
 .settings-status-panel {
   margin-top: 0;
 }

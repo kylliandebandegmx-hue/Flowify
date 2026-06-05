@@ -16,8 +16,8 @@ export function registerServiceWorker() {
         const cacheKeys = await caches.keys();
         await Promise.all(cacheKeys.map((key) => caches.delete(key)));
       }
-      if (navigator.serviceWorker.controller && !sessionStorage.getItem('flowify-sw-reset-v4')) {
-        sessionStorage.setItem('flowify-sw-reset-v4', '1');
+      if (navigator.serviceWorker.controller && !sessionStorage.getItem('flowify-sw-reset-v5')) {
+        sessionStorage.setItem('flowify-sw-reset-v5', '1');
         window.location.reload();
       }
     } catch {

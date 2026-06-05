@@ -8,6 +8,8 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.AudioAttributes;
 import android.media.MediaMetadata;
 import android.media.MediaPlayer;
@@ -38,6 +40,10 @@ import androidx.core.content.ContextCompat;
 public class FlowifyNativeAudioPlugin extends Plugin {
     private static final String NOTIFICATION_CHANNEL_ID = "flowify_playback";
     private static final int NOTIFICATION_ID = 1001;
+    static final String ACTION_NEXT = "com.flowify.app.action.NEXT";
+    static final String ACTION_PLAY_PAUSE = "com.flowify.app.action.PLAY_PAUSE";
+    static final String ACTION_PREVIOUS = "com.flowify.app.action.PREVIOUS";
+    private static FlowifyNativeAudioPlugin activeInstance;
 
     private static class AudioTrack {
         String artist;
@@ -57,6 +63,17 @@ public class FlowifyNativeAudioPlugin extends Plugin {
     private float volume = 1f;
     private MediaSession mediaSession;
     private NotificationManager notificationManager;
+
+    @Override
+    public void load() {
+        activeInstance = this;
+    }
+
+    static void handleNotificationAction(String action) {
+        FlowifyNativeAudioPlugin instance = activeInstance;
+        if (instance == null || action == null) return;
+        instance.handler.post(() -> instance.handleMediaAction(action));
+    }
 
     private final Runnable progressTick = new Runnable() {
         @Override
@@ -266,6 +283,31 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         );
     }
 
+    private void handleMediaAction(String action) {
+        if (ACTION_NEXT.equals(action)) {
+            playNext(false);
+            return;
+        }
+        if (ACTION_PREVIOUS.equals(action)) {
+            if (!queue.isEmpty()) {
+                loadIndex(Math.max(0, currentIndex - 1), true);
+            }
+            return;
+        }
+        if (ACTION_PLAY_PAUSE.equals(action)) {
+            if (player == null || !prepared) return;
+            if (player.isPlaying()) {
+                player.pause();
+            } else {
+                player.start();
+                startProgress();
+            }
+            updateMediaSessionState();
+            showPlaybackNotification();
+            notifyState(null);
+        }
+    }
+
     private void updateMediaSessionMetadata(AudioTrack track) {
         if (mediaSession == null || track == null) return;
         mediaSession.setMetadata(new MediaMetadata.Builder()
@@ -306,6 +348,7 @@ public class FlowifyNativeAudioPlugin extends Plugin {
         AudioTrack track = queue.get(currentIndex);
         NotificationManager manager = getNotificationManager();
         if (manager == null) return;
+        boolean isPlaying = player != null && prepared && player.isPlaying();
 
         Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
         PendingIntent contentIntent = launchIntent == null
@@ -317,6 +360,11 @@ public class FlowifyNativeAudioPlugin extends Plugin {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
+        PendingIntent previousIntent = mediaActionIntent(ACTION_PREVIOUS, 1);
+        PendingIntent playPauseIntent = mediaActionIntent(ACTION_PLAY_PAUSE, 2);
+        PendingIntent nextIntent = mediaActionIntent(ACTION_NEXT, 3);
+        Bitmap largeIcon = BitmapFactory.decodeResource(context.getResources(), R.mipmap.ic_launcher);
+
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(context, NOTIFICATION_CHANNEL_ID)
                 : new Notification.Builder(context);
@@ -324,15 +372,39 @@ public class FlowifyNativeAudioPlugin extends Plugin {
                 .setSmallIcon(R.drawable.flowify_icon)
                 .setContentTitle(track.title)
                 .setContentText(track.artist)
+                .setSubText("Flowify")
                 .setCategory(Notification.CATEGORY_TRANSPORT)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setShowWhen(false)
-                .setOngoing(player != null && prepared && player.isPlaying())
-                .setStyle(new Notification.MediaStyle().setMediaSession(mediaSession.getSessionToken()));
+                .setOnlyAlertOnce(true)
+                .setOngoing(isPlaying)
+                .setPriority(Notification.PRIORITY_LOW)
+                .addAction(android.R.drawable.ic_media_previous, "Precedent", previousIntent)
+                .addAction(isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play, isPlaying ? "Pause" : "Lecture", playPauseIntent)
+                .addAction(android.R.drawable.ic_media_next, "Suivant", nextIntent)
+                .setStyle(new Notification.MediaStyle()
+                        .setMediaSession(mediaSession.getSessionToken())
+                        .setShowActionsInCompactView(0, 1, 2));
+        if (largeIcon != null) {
+            builder.setLargeIcon(largeIcon);
+        }
         if (contentIntent != null) {
             builder.setContentIntent(contentIntent);
+            mediaSession.setSessionActivity(contentIntent);
         }
         manager.notify(NOTIFICATION_ID, builder.build());
+    }
+
+    private PendingIntent mediaActionIntent(String action, int requestCode) {
+        Context context = getContext();
+        Intent intent = new Intent(context, FlowifyMediaButtonReceiver.class);
+        intent.setAction(action);
+        return PendingIntent.getBroadcast(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+        );
     }
 
     private NotificationManager getNotificationManager() {

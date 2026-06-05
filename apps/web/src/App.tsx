@@ -49,6 +49,7 @@ import {
   clearYoutubeApiKey,
   clearFlowifyApiBaseUrl,
   cloudStreamUrl,
+  createCloudQueueStream,
   deleteCloudTrackObject,
   downloadTrack,
   getFlowifyApiBaseUrl,
@@ -100,6 +101,7 @@ type PlayTrackOptions = {
 
 const THEME_PRIMARY_KEY = 'flowify.theme.primary';
 const THEME_SECONDARY_KEY = 'flowify.theme.secondary';
+const PWA_LOCK_MODE_KEY = 'flowify.pwa-lock-mode';
 const DEFAULT_PRIMARY_COLOR = '#4BF5FB';
 const DEFAULT_SECONDARY_COLOR = '#9E43F0';
 
@@ -165,6 +167,7 @@ export default function App() {
   const repeatEnabledRef = useRef(false);
   const autoAdvanceLockRef = useRef(false);
   const nativeAudioActiveRef = useRef(false);
+  const pwaCloudQueueStreamActiveRef = useRef(false);
   const wakeLockRef = useRef<{ release: () => Promise<void>; released?: boolean } | null>(null);
   const youtubeContainerRef = useRef<HTMLDivElement | null>(null);
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
@@ -198,6 +201,7 @@ export default function App() {
   const [settingsFlowifyApiUrl, setSettingsFlowifyApiUrl] = useState(() => getFlowifyApiBaseUrl());
   const [primaryColor, setPrimaryColor] = useState(() => readThemeColor(THEME_PRIMARY_KEY, DEFAULT_PRIMARY_COLOR));
   const [secondaryColor, setSecondaryColor] = useState(() => readThemeColor(THEME_SECONDARY_KEY, DEFAULT_SECONDARY_COLOR));
+  const [pwaLockMode, setPwaLockMode] = useState(() => readBooleanSetting(PWA_LOCK_MODE_KEY, false));
   const [hasYoutubeKey, setHasYoutubeKey] = useState(() => Boolean(getYoutubeApiKey()));
   const [hasFlowifyApi, setHasFlowifyApi] = useState(() => hasYtdlpAudioApi());
   const [nextPageToken, setNextPageToken] = useState('');
@@ -289,6 +293,10 @@ export default function App() {
   useEffect(() => {
     applyThemeColors(primaryColor, secondaryColor);
   }, [primaryColor, secondaryColor]);
+
+  useEffect(() => {
+    writeBooleanSetting(PWA_LOCK_MODE_KEY, pwaLockMode);
+  }, [pwaLockMode]);
 
   useEffect(() => {
     setSelectedTrackIds(new Set());
@@ -1633,6 +1641,7 @@ export default function App() {
   const playTrack = async (track: Track, list = visibleTracks, index = 0, options: PlayTrackOptions = {}) => {
     const audio = audioRef.current;
     autoAdvanceLockRef.current = false;
+    pwaCloudQueueStreamActiveRef.current = false;
 
     setCurrentTrack(track);
     currentTrackRef.current = track;
@@ -1682,6 +1691,7 @@ export default function App() {
       audio.pause();
       audio.removeAttribute('src');
       nativeAudioActiveRef.current = true;
+      pwaCloudQueueStreamActiveRef.current = false;
       try {
         await playNativeAudioQueue({
           index,
@@ -1703,6 +1713,41 @@ export default function App() {
       nativeAudioActiveRef.current = false;
       void stopNativeAudio();
     }
+
+    const pwaQueueTracks = pwaLockMode && !hasNativeAudio()
+      ? getPwaCloudQueueTracks(list, index, shuffleEnabledRef.current)
+      : [];
+    if (pwaQueueTracks.length > 1) {
+      const queueStartTrack = pwaQueueTracks[0];
+      setCurrentTrack(queueStartTrack);
+      currentTrackRef.current = queueStartTrack;
+      setQueue(pwaQueueTracks);
+      setQueueIndex(0);
+      queueRef.current = pwaQueueTracks;
+      queueIndexRef.current = 0;
+      setDuration(0);
+      setMessage('Preparation PWA verrouille...');
+
+      try {
+        const stream = await createCloudQueueStream(pwaQueueTracks);
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.preload = 'auto';
+        audio.volume = volume;
+        audio.src = stream.url;
+        audio.load();
+        pwaCloudQueueStreamActiveRef.current = true;
+        setMessage('');
+        await audio.play();
+        setPlaying(true);
+      } catch (error) {
+        pwaCloudQueueStreamActiveRef.current = false;
+        setPlaying(false);
+        setMessage(errorMessage(error));
+      }
+      return;
+    }
+
     if (!options.skipProbe) {
       setMessage('Preparation audio Cloud...');
       try {
@@ -1840,6 +1885,7 @@ export default function App() {
     const nextDuration = audio.duration;
     if (Number.isFinite(nextDuration) && nextDuration > 0) {
       setDuration(nextDuration);
+      if (pwaCloudQueueStreamActiveRef.current) return;
       if (!audio.paused && nextDuration - nextTime <= 0.35 && hasNextPlaybackTarget()) {
         advanceFromPlaybackEnd();
       }
@@ -1912,6 +1958,11 @@ export default function App() {
       const audio = audioRef.current;
       if (!audio) return;
       if (audio.ended) {
+        if (pwaCloudQueueStreamActiveRef.current) {
+          pwaCloudQueueStreamActiveRef.current = false;
+          setPlaying(false);
+          return;
+        }
         advanceFromPlaybackEnd();
         return;
       }
@@ -1947,14 +1998,21 @@ export default function App() {
         crossOrigin="anonymous"
         ref={audioRef}
         preload="auto"
+        playsInline
         onDurationChange={(event) => {
           const nextDuration = event.currentTarget.duration;
           if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
         onEnded={() => {
+          if (pwaCloudQueueStreamActiveRef.current) {
+            pwaCloudQueueStreamActiveRef.current = false;
+            setPlaying(false);
+            return;
+          }
           advanceFromPlaybackEnd();
         }}
         onError={(event) => {
+          pwaCloudQueueStreamActiveRef.current = false;
           setPlaying(false);
           const source = event.currentTarget.currentSrc;
           const code = event.currentTarget.error?.code;
@@ -2326,6 +2384,18 @@ export default function App() {
                   <span>
                     YouTube: {hasYoutubeKey ? 'pret' : 'sans cle'} - Cloud: {health?.cloudStorageAvailable ? 'pret' : 'a verifier'}
                   </span>
+                </article>
+                <article className="settings-card">
+                  <h2>PWA</h2>
+                  <label className="toggle-row">
+                    <input
+                      checked={pwaLockMode}
+                      onChange={(event) => setPwaLockMode(event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>Mode verrouille</span>
+                  </label>
+                  <span>Cloud continu pour ecran verrouille.</span>
                 </article>
                 <article className="settings-card">
                   <h2>Session</h2>
@@ -2890,6 +2960,25 @@ function readThemeColor(key: string, fallback: string) {
   }
 }
 
+function readBooleanSetting(key: string, fallback: boolean) {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved === '1') return true;
+    if (saved === '0') return false;
+  } catch {
+    undefined;
+  }
+  return fallback;
+}
+
+function writeBooleanSetting(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, value ? '1' : '0');
+  } catch {
+    undefined;
+  }
+}
+
 function applyThemeColors(primary: string, secondary: string) {
   if (typeof document === 'undefined') return;
   const nextPrimary = isThemeColor(primary) ? primary : DEFAULT_PRIMARY_COLOR;
@@ -3068,6 +3157,30 @@ function getPlaylistStartIndex(length: number, shuffle: boolean) {
   if (length <= 0) return 0;
   if (!shuffle || length === 1) return 0;
   return 1 + Math.floor(Math.random() * (length - 1));
+}
+
+function getPwaCloudQueueTracks(list: Track[], index: number, shuffle: boolean) {
+  if (list.length < 2 || list.some((track) => track.source !== 'cloud' || !track.storageKey)) {
+    return [];
+  }
+
+  const startIndex = Math.min(Math.max(index, 0), list.length - 1);
+  if (!shuffle) {
+    return list.slice(startIndex);
+  }
+
+  const current = list[startIndex];
+  const rest = list.filter((_, itemIndex) => itemIndex !== startIndex);
+  return [current, ...shuffleTrackList(rest)];
+}
+
+function shuffleTrackList(tracks: Track[]) {
+  const copy = [...tracks];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
 }
 
 async function extractEmbeddedCover(file: File) {
