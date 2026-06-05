@@ -235,7 +235,6 @@ app.get('/api/cloud/stream', async (req, res, next) => {
       Range: req.headers.range,
     }));
 
-    // Force audio/mpeg content-type for reliable playback
     const contentType = object.ContentType && object.ContentType.startsWith('audio/')
       ? object.ContentType
       : 'audio/mpeg';
@@ -410,7 +409,6 @@ app.use((err, _req, res, _next) => {
 app.listen(port, () => {
   console.log(`Flowify API listening on http://localhost:${port}`);
 
-  // Auto-ping toutes les 14 minutes pour éviter le cold start Render (veille après 15 min)
   const selfPingUrl = process.env.RENDER_EXTERNAL_URL
     ? `${process.env.RENDER_EXTERNAL_URL}/health`
     : null;
