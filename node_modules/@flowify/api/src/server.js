@@ -260,7 +260,7 @@ app.get('/api/cloud/stream', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-}}
+});
 
 app.get('/api/cloud/signed-url', async (req, res, next) => {
   try {
