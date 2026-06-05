@@ -294,6 +294,15 @@ app.post('/api/cloud/queue-streams', async (req, res, next) => {
     const segments = cloudQueueSegments(tracks);
     const duration = segments[segments.length - 1]?.end || 0;
     cleanupCloudQueueStreams();
+    
+    // Si plusieurs tracks, mettre dans la cache de construction (pas en memory)
+    if (tracks.length > 1) {
+      // Lancer la construction en arriere-plan
+      ensureCloudQueueFile(id, tracks).catch((err) => {
+        console.error(`Failed to build cloud queue ${id}:`, err?.message || err);
+      });
+    }
+    
     cloudQueueStreams.set(id, {
       createdAt: Date.now(),
       duration,
@@ -309,7 +318,7 @@ app.post('/api/cloud/queue-streams', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
+});;
 
 app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
   try {
@@ -329,6 +338,14 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
       throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
     }
 
+    // Si plusieurs musiques, les concatener avec ffmpeg d'abord
+    if (queue.tracks.length > 1) {
+      const meta = await ensureCloudQueueFile(id, queue.tracks);
+      await sendAudioFile(meta.filePath, req, res, 'audio/mpeg');
+      return;
+    }
+
+    // Sinon stream direct depuis R2
     await streamCloudQueue(queue.tracks, req, res, {
       startIndex: clamp(Number(req.query.startIndex || 0), 0, queue.tracks.length - 1),
       startOffset: clampSeconds(Number(req.query.offset || 0), 0, 24 * 60 * 60),
@@ -336,7 +353,7 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
+});;
 
 app.post('/api/cloud/delete', async (req, res, next) => {
   try {
