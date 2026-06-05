@@ -1505,16 +1505,17 @@ export default function App() {
     const nextOffset = Math.min(Math.max(localTime, 0), Math.max(0, segment.duration - 0.05));
     const nextBaseTime = segment.start + nextOffset;
     pwaCloudQueueBaseTimeRef.current = nextBaseTime;
-    audio.pause();
     audio.src = queueStreamPlaybackUrl(streamUrl, nextIndex, nextOffset);
     audio.load();
     syncPwaQueueStreamTime(nextBaseTime);
-    void audio.play()
-      .then(() => setPlaying(true))
-      .catch((error) => {
-        setPlaying(false);
-        setMessage(errorMessage(error));
-      });
+    setTimeout(() => {
+      audio.play()
+        .then(() => setPlaying(true))
+        .catch((error) => {
+          setPlaying(false);
+          setMessage(errorMessage(error));
+        });
+    }, 50);
     return true;
   };
 
@@ -1655,13 +1656,14 @@ export default function App() {
     audio.volume = volume;
     audio.src = source;
     audio.load();
-    try {
-      await audio.play();
-      setPlaying(true);
-    } catch (error) {
-      setPlaying(false);
-      setMessage(`Lecture impossible: ${errorMessage(error)}`);
-    }
+    setTimeout(() => {
+      audio.play()
+        .then(() => setPlaying(true))
+        .catch((error) => {
+          setPlaying(false);
+          setMessage(`Lecture impossible: ${errorMessage(error)}`);
+        });
+    }, 50);
   };
 
   const seekCurrentTrack = (nextTime: number) => {
