@@ -282,17 +282,19 @@ app.post('/api/cloud/queue-streams', async (req, res, next) => {
     if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
     const tracks = normalizeCloudQueue(req.body?.tracks);
     const id = cloudQueueId(tracks);
+    const segments = cloudQueueSegments(tracks);
+    const duration = segments[segments.length - 1]?.end || 0;
     cleanupCloudQueueStreams();
-    const queue = await ensureCloudQueueFile(id, tracks);
     cloudQueueStreams.set(id, {
       createdAt: Date.now(),
-      ...queue,
+      duration,
+      segments,
       tracks,
     });
     res.json({
       id,
-      duration: queue.duration,
-      segments: queue.segments,
+      duration,
+      segments,
       url: `/api/cloud/queue-streams/${encodeURIComponent(id)}`,
     });
   } catch (err) {
@@ -310,8 +312,18 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
       queue = await readCloudQueueMeta(id);
     }
     if (!queue) throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
+    if (!Array.isArray(queue.tracks) || !queue.tracks.length) {
+      if (queue.filePath) {
+        await sendAudioFile(queue.filePath, req, res, 'audio/mpeg');
+        return;
+      }
+      throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
+    }
 
-    await sendAudioFile(queue.filePath, req, res, 'audio/mpeg');
+    await streamCloudQueue(queue.tracks, req, res, {
+      startIndex: clamp(Number(req.query.startIndex || 0), 0, queue.tracks.length - 1),
+      startOffset: clampSeconds(Number(req.query.offset || 0), 0, 24 * 60 * 60),
+    });
   } catch (err) {
     next(err);
   }
@@ -705,6 +717,24 @@ function ensureCloudQueueId(value) {
   return id;
 }
 
+function cloudQueueSegments(tracks) {
+  let cursor = 0;
+  return tracks.map((track, index) => {
+    const duration = Math.max(1, track.durationSeconds || 180);
+    const start = cursor;
+    const end = start + duration;
+    cursor = end;
+    return {
+      duration,
+      end,
+      index,
+      key: track.key,
+      start,
+      title: track.title,
+    };
+  });
+}
+
 async function readCloudQueueMeta(id) {
   const metaPath = path.join(cloudQueueDir, `${ensureCloudQueueId(id)}.json`);
   try {
@@ -928,16 +958,31 @@ function escapeFfmpegConcatPath(filePath) {
   return filePath.replace(/\\/g, '/').replace(/'/g, "\\'");
 }
 
-async function streamCloudQueue(tracks, req, res) {
+async function streamCloudQueue(tracks, req, res, options = {}) {
   let closedByClient = false;
   req.on('close', () => {
     closedByClient = true;
   });
 
-  const firstObject = await getR2Client().send(new GetObjectCommand({
+  const startIndex = Math.min(Math.max(options.startIndex || 0, 0), tracks.length - 1);
+  const startOffset = Math.max(0, Number(options.startOffset || 0));
+  const activeTracks = tracks.slice(startIndex);
+  if (!activeTracks.length) throw httpError(400, 'File Cloud vide');
+
+  const concatPath = path.join(runtimeDir, `cloud-queue-${randomUUID()}.txt`);
+  await fs.mkdir(runtimeDir, { recursive: true });
+  const signedUrls = await Promise.all(activeTracks.map(async (track) => getSignedUrl(getR2Client(), new GetObjectCommand({
     Bucket: r2Bucket,
-    Key: tracks[0].key,
-  }));
+    Key: track.key,
+  }), { expiresIn: 3600 })));
+  const concatLines = signedUrls.flatMap((url, index) => {
+    const lines = [`file '${escapeFfmpegConcatPath(url)}'`];
+    if (index === 0 && startOffset > 0) {
+      lines.push(`inpoint ${startOffset}`);
+    }
+    return lines;
+  });
+  await fs.writeFile(concatPath, concatLines.join('\n'), 'utf8');
 
   res.status(200);
   res.setHeader('Content-Type', 'audio/mpeg');
@@ -946,26 +991,71 @@ async function streamCloudQueue(tracks, req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.flushHeaders?.();
 
-  try {
-    if (firstObject.Body) {
-      await transcodeCloudObjectToResponse(firstObject.Body, res);
-    }
+  const ffmpeg = spawn(ffmpegPath, [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-nostdin',
+    '-protocol_whitelist',
+    'file,http,https,tcp,tls,crypto,httpproxy',
+    '-reconnect',
+    '1',
+    '-reconnect_streamed',
+    '1',
+    '-reconnect_delay_max',
+    '5',
+    '-f',
+    'concat',
+    '-safe',
+    '0',
+    '-i',
+    concatPath,
+    '-vn',
+    '-ar',
+    '44100',
+    '-ac',
+    '2',
+    '-codec:a',
+    'libmp3lame',
+    '-b:a',
+    '160k',
+    '-f',
+    'mp3',
+    'pipe:1',
+  ], { windowsHide: true });
 
-    for (const track of tracks.slice(1)) {
-      if (closedByClient || res.destroyed || res.writableEnded) return;
-      const object = await getR2Client().send(new GetObjectCommand({
-        Bucket: r2Bucket,
-        Key: track.key,
-      }));
-      if (!object.Body) continue;
-      await transcodeCloudObjectToResponse(object.Body, res);
-    }
-  } catch (error) {
-    res.destroy(error);
-    return;
-  }
+  let stderr = '';
+  const cleanup = () => {
+    void fs.rm(concatPath, { force: true }).catch(() => undefined);
+  };
+  const stop = () => {
+    closedByClient = true;
+    ffmpeg.kill('SIGTERM');
+    cleanup();
+  };
 
-  if (!res.destroyed && !res.writableEnded) res.end();
+  req.once('close', stop);
+  res.once('close', stop);
+  ffmpeg.stderr.on('data', (chunk) => {
+    stderr += chunk.toString();
+  });
+  ffmpeg.on('error', (error) => {
+    cleanup();
+    if (!res.destroyed) res.destroy(error);
+  });
+  ffmpeg.on('close', (code) => {
+    cleanup();
+    req.off?.('close', stop);
+    res.off?.('close', stop);
+    if (closedByClient || res.destroyed || res.writableEnded) return;
+    if (code !== 0) {
+      res.destroy(httpError(502, `ffmpeg exited with code ${code}: ${stderr}`));
+      return;
+    }
+    res.end();
+  });
+
+  ffmpeg.stdout.pipe(res, { end: false });
 }
 
 async function transcodeCloudObjectToResponse(body, res) {
@@ -1262,6 +1352,11 @@ function ensureVideoId(videoId) {
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) return min;
   return Math.min(Math.max(Math.round(value), min), max);
+}
+
+function clampSeconds(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(Math.max(value, min), max);
 }
 
 function httpError(status, message) {

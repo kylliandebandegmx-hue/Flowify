@@ -118,6 +118,8 @@ export default function App() {
   const autoAdvanceLockRef = useRef(false);
   const nativeAudioActiveRef = useRef(false);
   const pwaCloudQueueStreamActiveRef = useRef(false);
+  const pwaCloudQueueStreamUrlRef = useRef('');
+  const pwaCloudQueueBaseTimeRef = useRef(0);
   const pwaCloudQueueSegmentsRef = useRef<CloudQueueStreamSegment[]>([]);
   const pwaCloudQueueDurationRef = useRef(0);
   const wakeLockRef = useRef<{ release: () => Promise<void>; released?: boolean } | null>(null);
@@ -862,13 +864,14 @@ export default function App() {
     try {
       for (const file of audioFiles) {
         const embeddedCover = await extractEmbeddedCover(file);
+        const fileDuration = await readAudioFileDuration(file);
         const uploaded = await uploadCloudTrack(file);
         const track: Track = {
           id: `cloud:${uploaded.key}`,
           title: titleFromFile(uploaded.fileName || file.name),
           channel: 'Cloud Flowify',
           thumbnail: embeddedCover,
-          duration: '',
+          duration: fileDuration ? formatTime(fileDuration) : '',
           viewCount: '',
           publishedAt: new Date().toISOString(),
           description: 'Musique importee dans Flowify Cloud',
@@ -1230,6 +1233,8 @@ export default function App() {
     audio?.pause();
     audio?.removeAttribute('src');
     pwaCloudQueueStreamActiveRef.current = false;
+    pwaCloudQueueStreamUrlRef.current = '';
+    pwaCloudQueueBaseTimeRef.current = 0;
     pwaCloudQueueSegmentsRef.current = [];
     pwaCloudQueueDurationRef.current = 0;
     if (nativeAudioActiveRef.current) {
@@ -1463,18 +1468,24 @@ export default function App() {
   const seekPwaQueueSegment = (segmentIndex: number, localTime = 0) => {
     const audio = audioRef.current;
     const segments = pwaCloudQueueSegmentsRef.current;
-    if (!audio || !pwaCloudQueueStreamActiveRef.current || !segments.length) return false;
+    const streamUrl = pwaCloudQueueStreamUrlRef.current;
+    if (!audio || !pwaCloudQueueStreamActiveRef.current || !segments.length || !streamUrl) return false;
 
     const nextIndex = Math.min(Math.max(segmentIndex, 0), segments.length - 1);
     const segment = segments[nextIndex];
-    const nextTime = segment.start + Math.min(Math.max(localTime, 0), Math.max(0, segment.duration - 0.05));
-    audio.currentTime = nextTime;
-    syncPwaQueueStreamTime(nextTime);
-    if (audio.paused) {
-      void audio.play()
-        .then(() => setPlaying(true))
-        .catch((error) => setMessage(errorMessage(error)));
-    }
+    const nextOffset = Math.min(Math.max(localTime, 0), Math.max(0, segment.duration - 0.05));
+    const nextBaseTime = segment.start + nextOffset;
+    pwaCloudQueueBaseTimeRef.current = nextBaseTime;
+    audio.pause();
+    audio.src = queueStreamPlaybackUrl(streamUrl, nextIndex, nextOffset);
+    audio.load();
+    syncPwaQueueStreamTime(nextBaseTime);
+    void audio.play()
+      .then(() => setPlaying(true))
+      .catch((error) => {
+        setPlaying(false);
+        setMessage(errorMessage(error));
+      });
     return true;
   };
 
@@ -1482,6 +1493,8 @@ export default function App() {
     const audio = audioRef.current;
     autoAdvanceLockRef.current = false;
     pwaCloudQueueStreamActiveRef.current = false;
+    pwaCloudQueueStreamUrlRef.current = '';
+    pwaCloudQueueBaseTimeRef.current = 0;
     pwaCloudQueueSegmentsRef.current = [];
     pwaCloudQueueDurationRef.current = 0;
 
@@ -1568,11 +1581,13 @@ export default function App() {
 
         pwaCloudQueueSegmentsRef.current = usableSegments;
         pwaCloudQueueDurationRef.current = stream.duration || usableSegments[usableSegments.length - 1]?.end || 0;
+        pwaCloudQueueStreamUrlRef.current = stream.url;
+        pwaCloudQueueBaseTimeRef.current = 0;
         audio.pause();
         audio.removeAttribute('src');
         audio.preload = 'auto';
         audio.volume = volume;
-        audio.src = stream.url;
+        audio.src = queueStreamPlaybackUrl(stream.url, 0, 0);
         audio.load();
         pwaCloudQueueStreamActiveRef.current = true;
         syncPwaQueueStreamTime(0);
@@ -1581,6 +1596,8 @@ export default function App() {
         setPlaying(true);
       } catch (error) {
         pwaCloudQueueStreamActiveRef.current = false;
+        pwaCloudQueueStreamUrlRef.current = '';
+        pwaCloudQueueBaseTimeRef.current = 0;
         pwaCloudQueueSegmentsRef.current = [];
         pwaCloudQueueDurationRef.current = 0;
         setPlaying(false);
@@ -1678,7 +1695,7 @@ export default function App() {
 
     if (pwaCloudQueueStreamActiveRef.current && pwaCloudQueueSegmentsRef.current.length) {
       const segments = pwaCloudQueueSegmentsRef.current;
-      const currentSegment = findPwaQueueSegment(segments, audioRef.current?.currentTime || 0);
+      const currentSegment = findPwaQueueSegment(segments, pwaCloudQueueBaseTimeRef.current + (audioRef.current?.currentTime || 0));
       const activeIndex = currentSegment?.index ?? queueIndexRef.current;
       let nextIndex = activeIndex + offset;
       const shouldRepeat = repeatEnabledRef.current;
@@ -1732,7 +1749,7 @@ export default function App() {
   };
 
   const syncCloudPlaybackTime = (audio: HTMLAudioElement) => {
-    if (pwaCloudQueueStreamActiveRef.current && syncPwaQueueStreamTime(audio.currentTime || 0)) {
+    if (pwaCloudQueueStreamActiveRef.current && syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audio.currentTime || 0))) {
       return;
     }
 
@@ -1806,7 +1823,7 @@ export default function App() {
             seekPwaQueueSegment(0, 0);
           } else {
             setPlaying(false);
-            syncPwaQueueStreamTime(audio.currentTime || pwaCloudQueueDurationRef.current);
+            syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audio.currentTime || pwaCloudQueueDurationRef.current));
           }
           return;
         }
@@ -1843,7 +1860,7 @@ export default function App() {
         preload="auto"
         playsInline
         onDurationChange={(event) => {
-          if (pwaCloudQueueStreamActiveRef.current && syncPwaQueueStreamTime(event.currentTarget.currentTime || 0)) return;
+          if (pwaCloudQueueStreamActiveRef.current && syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (event.currentTarget.currentTime || 0))) return;
           const nextDuration = event.currentTarget.duration;
           if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
@@ -1853,7 +1870,7 @@ export default function App() {
               seekPwaQueueSegment(0, 0);
             } else {
               setPlaying(false);
-              syncPwaQueueStreamTime(audioRef.current?.currentTime || pwaCloudQueueDurationRef.current);
+              syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audioRef.current?.currentTime || pwaCloudQueueDurationRef.current));
             }
             return;
           }
@@ -1861,6 +1878,8 @@ export default function App() {
         }}
         onError={(event) => {
           pwaCloudQueueStreamActiveRef.current = false;
+          pwaCloudQueueStreamUrlRef.current = '';
+          pwaCloudQueueBaseTimeRef.current = 0;
           pwaCloudQueueSegmentsRef.current = [];
           pwaCloudQueueDurationRef.current = 0;
           setPlaying(false);
@@ -1873,7 +1892,7 @@ export default function App() {
           }
         }}
         onLoadedMetadata={(event) => {
-          if (pwaCloudQueueStreamActiveRef.current && syncPwaQueueStreamTime(event.currentTarget.currentTime || 0)) return;
+          if (pwaCloudQueueStreamActiveRef.current && syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (event.currentTarget.currentTime || 0))) return;
           const nextDuration = event.currentTarget.duration;
           if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
         }}
@@ -2950,6 +2969,14 @@ function findPwaQueueSegment(segments: CloudQueueStreamSegment[], globalTime: nu
     || null;
 }
 
+function queueStreamPlaybackUrl(url: string, startIndex: number, offset: number) {
+  const parsed = new URL(url, window.location.origin);
+  parsed.searchParams.set('startIndex', String(Math.max(0, Math.floor(startIndex))));
+  parsed.searchParams.set('offset', String(Math.max(0, offset)));
+  parsed.searchParams.set('play', String(Date.now()));
+  return parsed.toString();
+}
+
 function shuffleTrackList(tracks: Track[]) {
   const copy = [...tracks];
   for (let index = copy.length - 1; index > 0; index -= 1) {
@@ -2972,6 +2999,26 @@ async function extractEmbeddedCover(file: File) {
     return await resizeArtworkBlob(new Blob([pictureBuffer], { type: picture.mimeType || 'image/jpeg' }));
   } catch {
     return '';
+  }
+}
+
+async function readAudioFileDuration(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const audio = document.createElement('audio');
+    audio.preload = 'metadata';
+    return await new Promise<number>((resolve) => {
+      const finish = (value: number) => {
+        audio.removeAttribute('src');
+        audio.load();
+        resolve(Number.isFinite(value) && value > 0 ? value : 0);
+      };
+      audio.onloadedmetadata = () => finish(audio.duration);
+      audio.onerror = () => finish(0);
+      audio.src = objectUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
   }
 }
 
