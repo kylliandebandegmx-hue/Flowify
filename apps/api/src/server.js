@@ -1,11 +1,13 @@
 import cors from 'cors';
 import 'dotenv/config';
 import express from 'express';
+import { createReadStream, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -15,6 +17,7 @@ const port = Number(process.env.PORT || 8787);
 const youtubeApiKey = process.env.YOUTUBE_API_KEY || '';
 const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
 const ffmpegPath = process.env.FFMPEG_PATH || 'ffmpeg';
+const ffprobePath = process.env.FFPROBE_PATH || 'ffprobe';
 const ytdlpJsRuntime = process.env.YTDLP_JS_RUNTIME || 'deno';
 const ytdlpRemoteComponents = process.env.YTDLP_REMOTE_COMPONENTS || 'ejs:github';
 const ytdlpCookiesFile = process.env.YTDLP_COOKIES_FILE || '';
@@ -33,6 +36,7 @@ const downloadDir = path.resolve(
   process.env.DOWNLOAD_DIR || path.join(__dirname, '..', '.flowify-downloads'),
 );
 const streamDir = path.join(downloadDir, 'streams');
+const cloudQueueDir = path.join(downloadDir, 'cloud-queues');
 const runtimeDir = path.join(downloadDir, 'runtime');
 const staticDir = path.resolve(
   process.cwd(),
@@ -41,6 +45,7 @@ const staticDir = path.resolve(
 
 const streamBuilds = new Map();
 const cloudQueueStreams = new Map();
+const cloudQueueBuilds = new Map();
 const cloudQueueStreamTtlMs = 2 * 60 * 60 * 1000;
 const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
 let r2ClientInstance = null;
@@ -276,14 +281,18 @@ app.post('/api/cloud/queue-streams', async (req, res, next) => {
   try {
     if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
     const tracks = normalizeCloudQueue(req.body?.tracks);
-    const id = randomUUID();
+    const id = cloudQueueId(tracks);
     cleanupCloudQueueStreams();
+    const queue = await ensureCloudQueueFile(id, tracks);
     cloudQueueStreams.set(id, {
       createdAt: Date.now(),
+      ...queue,
       tracks,
     });
     res.json({
       id,
+      duration: queue.duration,
+      segments: queue.segments,
       url: `/api/cloud/queue-streams/${encodeURIComponent(id)}`,
     });
   } catch (err) {
@@ -295,10 +304,14 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
   try {
     if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
     cleanupCloudQueueStreams();
-    const queue = cloudQueueStreams.get(String(req.params.id || ''));
+    const id = ensureCloudQueueId(String(req.params.id || ''));
+    let queue = cloudQueueStreams.get(id);
+    if (!queue) {
+      queue = await readCloudQueueMeta(id);
+    }
     if (!queue) throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
 
-    await streamCloudQueue(queue.tracks, req, res);
+    await sendAudioFile(queue.filePath, req, res, 'audio/mpeg');
   } catch (err) {
     next(err);
   }
@@ -658,6 +671,7 @@ function normalizeCloudQueue(value) {
     .slice(0, 200)
     .map((track) => ({
       contentType: normalizeContentType(track?.contentType || 'audio/mpeg'),
+      durationSeconds: clamp(Number(track?.durationSeconds || 0), 0, 24 * 60 * 60),
       key: ensureCloudKey(String(track?.key || track?.storageKey || '')),
       title: String(track?.title || '').slice(0, 160),
     }));
@@ -673,6 +687,245 @@ function cleanupCloudQueueStreams() {
       cloudQueueStreams.delete(id);
     }
   }
+}
+
+function cloudQueueId(tracks) {
+  return createHash('sha256')
+    .update(JSON.stringify(tracks.map((track) => ({
+      durationSeconds: Math.round((track.durationSeconds || 0) * 1000) / 1000,
+      key: track.key,
+    }))))
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function ensureCloudQueueId(value) {
+  const id = String(value || '').trim();
+  if (!/^[a-f0-9]{32}$/.test(id)) throw httpError(400, 'File audio Cloud invalide');
+  return id;
+}
+
+async function readCloudQueueMeta(id) {
+  const metaPath = path.join(cloudQueueDir, `${ensureCloudQueueId(id)}.json`);
+  try {
+    const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    if (!meta?.filePath || !Array.isArray(meta?.segments)) return null;
+    await fs.access(meta.filePath);
+    return meta;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCloudQueueFile(id, tracks) {
+  const existing = await readCloudQueueMeta(id);
+  if (existing) return existing;
+
+  if (!cloudQueueBuilds.has(id)) {
+    cloudQueueBuilds.set(id, buildCloudQueueFile(id, tracks).finally(() => {
+      cloudQueueBuilds.delete(id);
+    }));
+  }
+
+  return cloudQueueBuilds.get(id);
+}
+
+async function buildCloudQueueFile(id, tracks) {
+  await fs.mkdir(cloudQueueDir, { recursive: true });
+  const finalPath = path.join(cloudQueueDir, `${id}.mp3`);
+  const metaPath = path.join(cloudQueueDir, `${id}.json`);
+  const tempFinalPath = path.join(cloudQueueDir, `${id}.${randomUUID()}.part.mp3`);
+  const buildDir = path.join(cloudQueueDir, `${id}-${randomUUID()}`);
+  await fs.mkdir(buildDir, { recursive: true });
+
+  try {
+    const segmentPaths = [];
+    const segments = [];
+    let cursor = 0;
+
+    for (const [index, track] of tracks.entries()) {
+      const inputPath = path.join(buildDir, `input-${String(index).padStart(4, '0')}${extensionForContentType(track.contentType)}`);
+      const segmentPath = path.join(buildDir, `segment-${String(index).padStart(4, '0')}.mp3`);
+
+      await downloadCloudObjectToFile(track.key, inputPath);
+      await runFfmpeg([
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-y',
+        '-i',
+        inputPath,
+        '-map',
+        '0:a:0',
+        '-vn',
+        '-ar',
+        '44100',
+        '-ac',
+        '2',
+        '-codec:a',
+        'libmp3lame',
+        '-b:a',
+        '160k',
+        '-f',
+        'mp3',
+        segmentPath,
+      ], 10 * 60 * 1000);
+
+      const probedDuration = await probeAudioDuration(segmentPath);
+      const estimatedDuration = await estimateMp3Duration(segmentPath);
+      const duration = Math.max(1, probedDuration || track.durationSeconds || estimatedDuration || 1);
+      const start = cursor;
+      const end = start + duration;
+      segmentPaths.push(segmentPath);
+      segments.push({
+        duration,
+        end,
+        index,
+        key: track.key,
+        start,
+        title: track.title,
+      });
+      cursor = end;
+    }
+
+    const concatPath = path.join(buildDir, 'concat.txt');
+    await fs.writeFile(
+      concatPath,
+      segmentPaths.map((filePath) => `file '${escapeFfmpegConcatPath(filePath)}'`).join('\n'),
+      'utf8',
+    );
+    await runFfmpeg([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-nostdin',
+      '-y',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      concatPath,
+      '-c',
+      'copy',
+      tempFinalPath,
+    ], 10 * 60 * 1000);
+    await fs.rename(tempFinalPath, finalPath);
+
+    const meta = {
+      createdAt: Date.now(),
+      duration: cursor,
+      filePath: finalPath,
+      segments,
+    };
+    await fs.writeFile(metaPath, JSON.stringify(meta), 'utf8');
+    return meta;
+  } catch (error) {
+    await fs.rm(tempFinalPath, { force: true }).catch(() => undefined);
+    throw error;
+  } finally {
+    await fs.rm(buildDir, { force: true, recursive: true }).catch(() => undefined);
+  }
+}
+
+async function downloadCloudObjectToFile(key, filePath) {
+  const object = await getR2Client().send(new GetObjectCommand({
+    Bucket: r2Bucket,
+    Key: key,
+  }));
+  if (!object.Body) throw httpError(404, 'Fichier Cloud introuvable');
+  await pipeline(await cloudBodyToReadable(object.Body), createWriteStream(filePath));
+}
+
+function runFfmpeg(args, timeoutMs = 60_000) {
+  return runProcess(ffmpegPath, args, timeoutMs, 'ffmpeg');
+}
+
+function runFfprobe(args, timeoutMs = 30_000) {
+  return runProcess(ffprobePath, args, timeoutMs, 'ffprobe');
+}
+
+async function probeAudioDuration(filePath) {
+  try {
+    const { stdout } = await runFfprobe([
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'json',
+      filePath,
+    ], 20_000);
+    const payload = JSON.parse(stdout);
+    const duration = Number(payload?.format?.duration || 0);
+    return Number.isFinite(duration) && duration > 0 ? duration : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function estimateMp3Duration(filePath) {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.size > 0 ? (stat.size * 8) / 160000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function sendAudioFile(filePath, req, res, contentType) {
+  const stat = await fs.stat(filePath);
+  const size = stat.size;
+  const range = String(req.headers.range || '');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match) {
+      res.status(416).setHeader('Content-Range', `bytes */${size}`).end();
+      return;
+    }
+
+    let start = match[1] ? Number(match[1]) : 0;
+    let end = match[2] ? Number(match[2]) : size - 1;
+    if (!match[1] && match[2]) {
+      const suffixLength = Number(match[2]);
+      start = Math.max(0, size - suffixLength);
+      end = size - 1;
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+      res.status(416).setHeader('Content-Range', `bytes */${size}`).end();
+      return;
+    }
+    end = Math.min(end, size - 1);
+
+    res.status(206);
+    res.setHeader('Content-Length', String(end - start + 1));
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+    createReadStream(filePath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.status(200);
+  res.setHeader('Content-Length', String(size));
+  createReadStream(filePath).pipe(res);
+}
+
+function extensionForContentType(contentType) {
+  if (contentType.includes('mpeg') || contentType.includes('mp3')) return '.mp3';
+  if (contentType.includes('mp4') || contentType.includes('aac')) return '.m4a';
+  if (contentType.includes('ogg')) return '.ogg';
+  if (contentType.includes('flac')) return '.flac';
+  if (contentType.includes('wav')) return '.wav';
+  return '.audio';
+}
+
+function escapeFfmpegConcatPath(filePath) {
+  return filePath.replace(/\\/g, '/').replace(/'/g, "\\'");
 }
 
 async function streamCloudQueue(tracks, req, res) {

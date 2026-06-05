@@ -8,6 +8,22 @@ let flowifyApiBase = normalizeApiBase(
 );
 const signedCloudUrlCache = new Map<string, { expiresAt: number; url: string }>();
 
+export interface CloudQueueStreamSegment {
+  duration: number;
+  end: number;
+  index: number;
+  key: string;
+  start: number;
+  title: string;
+}
+
+export interface CloudQueueStream {
+  duration: number;
+  id: string;
+  segments: CloudQueueStreamSegment[];
+  url: string;
+}
+
 export function getYoutubeApiKey(): string {
   return readStorage(YOUTUBE_KEY_STORAGE_KEY);
 }
@@ -175,7 +191,7 @@ export async function deleteCloudTrackObject(storageKey: string): Promise<void> 
   if (!response.ok) throw new Error(payload?.error || `Erreur suppression Cloud ${response.status}`);
 }
 
-export async function createCloudQueueStream(tracks: Track[]): Promise<{ id: string; url: string }> {
+export async function createCloudQueueStream(tracks: Track[]): Promise<CloudQueueStream> {
   await detectApiHealth();
   if (!flowifyApiBase) {
     throw new Error('Lecture Cloud PWA indisponible: configure URL API Flowify.');
@@ -185,6 +201,7 @@ export async function createCloudQueueStream(tracks: Track[]): Promise<{ id: str
     .filter((track) => track.source === 'cloud' && track.storageKey)
     .map((track) => ({
       contentType: track.contentType || 'audio/mpeg',
+      durationSeconds: parseTrackDuration(track.duration),
       key: track.storageKey,
       title: track.title,
     }));
@@ -200,7 +217,18 @@ export async function createCloudQueueStream(tracks: Track[]): Promise<{ id: str
   if (!response.ok) throw new Error(payload?.error || `Erreur file Cloud ${response.status}`);
 
   return {
+    duration: Number(payload.duration || 0),
     id: String(payload.id || ''),
+    segments: Array.isArray(payload.segments)
+      ? payload.segments.map((segment: Partial<CloudQueueStreamSegment>) => ({
+        duration: Number(segment.duration || 0),
+        end: Number(segment.end || 0),
+        index: Number(segment.index || 0),
+        key: String(segment.key || ''),
+        start: Number(segment.start || 0),
+        title: String(segment.title || ''),
+      }))
+      : [],
     url: apiUrl(String(payload.url || '')),
   };
 }
@@ -383,6 +411,15 @@ function apiUrl(path: string): string {
 
 function normalizeApiBase(value: string): string {
   return value.trim().replace(/\/+$/, '').replace(/\/health$/i, '');
+}
+
+function parseTrackDuration(value: string): number {
+  const parts = value
+    .split(':')
+    .map((part) => Number(part))
+    .filter((part) => Number.isFinite(part));
+  if (!parts.length) return 0;
+  return parts.reduce((total, part) => total * 60 + part, 0);
 }
 
 async function detectApiHealth(): Promise<ApiHealth | null> {
