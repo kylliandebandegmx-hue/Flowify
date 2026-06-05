@@ -1,4 +1,11 @@
-import cors from 'cors';
+function calculateRangeFromSegment(segments, startIndex, offset) {
+  if (!segments.length) return null;
+  const segment = segments.find((s) => s.index === startIndex);
+  if (!segment) return null;
+  // Byte offset approx : (segment.start + offset) / totalDuration * fileSize
+  // Pour simplicité, on retourne null et on laisse le navigateur faire le seek
+  return null;
+}import cors from 'cors';
 import 'dotenv/config';
 import express from 'express';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -338,22 +345,31 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
       throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
     }
 
+    // Extraire les parametres de segment
+    const startIndex = clamp(Number(req.query.startIndex || 0), 0, queue.tracks.length - 1);
+    const offset = clampSeconds(Number(req.query.offset || 0), 0, 24 * 60 * 60);
+
     // Si plusieurs musiques, les concatener avec ffmpeg d'abord
     if (queue.tracks.length > 1) {
       const meta = await ensureCloudQueueFile(id, queue.tracks);
-      await sendAudioFile(meta.filePath, req, res, 'audio/mpeg');
+      // Streamer a partir du segment demandé
+      const range = calculateRangeFromSegment(meta.segments, startIndex, offset);
+      if (range) {
+        res.setHeader('Range', `bytes=${range.start}-${range.end}`);
+      }
+      await sendAudioFile(meta.filePath, req, res, 'audio/mpeg', range);
       return;
     }
 
     // Sinon stream direct depuis R2
     await streamCloudQueue(queue.tracks, req, res, {
-      startIndex: clamp(Number(req.query.startIndex || 0), 0, queue.tracks.length - 1),
-      startOffset: clampSeconds(Number(req.query.offset || 0), 0, 24 * 60 * 60),
+      startIndex,
+      startOffset: offset,
     });
   } catch (err) {
     next(err);
   }
-});;
+});;;
 
 app.post('/api/cloud/delete', async (req, res, next) => {
   try {

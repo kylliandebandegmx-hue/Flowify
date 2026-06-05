@@ -1505,9 +1505,14 @@ export default function App() {
     const nextOffset = Math.min(Math.max(localTime, 0), Math.max(0, segment.duration - 0.05));
     const nextBaseTime = segment.start + nextOffset;
     pwaCloudQueueBaseTimeRef.current = nextBaseTime;
+    
+    // Important: ne pas pausepause() + play(), utilise removeAttribute + src pour eviter AbortError
+    audio.removeAttribute('src');
     audio.src = queueStreamPlaybackUrl(streamUrl, nextIndex, nextOffset);
     audio.load();
     syncPwaQueueStreamTime(nextBaseTime);
+    
+    // Attendre un peu pour que le navigateur prepare le nouveau src
     setTimeout(() => {
       audio.play()
         .then(() => setPlaying(true))
@@ -1515,7 +1520,7 @@ export default function App() {
           setPlaying(false);
           setMessage(errorMessage(error));
         });
-    }, 50);
+    }, 100);
     return true;
   };
 
@@ -3018,9 +3023,11 @@ function findPwaQueueSegment(segments: CloudQueueStreamSegment[], globalTime: nu
 
 function queueStreamPlaybackUrl(url: string, startIndex: number, offset: number) {
   const parsed = new URL(url, window.location.origin);
+  // Ajouter timestamp pour eviter le cache
+  parsed.searchParams.set('play', String(Date.now()));
+  // Ajouter le segment et l'offset pour que le serveur sache ou commencer
   parsed.searchParams.set('startIndex', String(Math.max(0, Math.floor(startIndex))));
   parsed.searchParams.set('offset', String(Math.max(0, offset)));
-  parsed.searchParams.set('play', String(Date.now()));
   return parsed.toString();
 }
 
