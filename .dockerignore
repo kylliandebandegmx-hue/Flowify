@@ -1,7 +1,8 @@
 .git
 node_modules
-apps/web/dist
 android/.gradle
 android/app/build
 android/build
 *.log
+apps/*/node_modules
+apps/web/.env*
