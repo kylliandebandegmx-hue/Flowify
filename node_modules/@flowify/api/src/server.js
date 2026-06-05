@@ -812,45 +812,53 @@ async function buildCloudQueueFile(id, tracks) {
   await fs.mkdir(buildDir, { recursive: true });
 
   try {
-    const segmentPaths = [];
+    // Au lieu de télécharger, utiliser les URLs signées directement avec ffmpeg
+    // Cela évite de stocker les fichiers en mémoire/disque
+    const signedUrls = await Promise.all(
+      tracks.map((track) =>
+        getSignedUrl(getR2Client(), new GetObjectCommand({
+          Bucket: r2Bucket,
+          Key: track.key,
+        }), { expiresIn: 3600 }),
+      ),
+    );
+
+    const concatPath = path.join(buildDir, 'concat.txt');
+    const concatLines = signedUrls.map((url) => `file '${escapeFfmpegConcatPath(url)}'`).join('\n');
+    await fs.writeFile(concatPath, concatLines, 'utf8');
+
+    // Utiliser ffmpeg concat demuxer directement sur les URLs R2 signées
+    // Ça stream directement sans télécharger
+    await runFfmpeg([
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-nostdin',
+      '-y',
+      '-protocol_whitelist',
+      'file,http,https,tcp,tls,crypto',
+      '-f',
+      'concat',
+      '-safe',
+      '0',
+      '-i',
+      concatPath,
+      '-c',
+      'copy',
+      '-f',
+      'mp3',
+      tempFinalPath,
+    ], 30 * 60 * 1000);
+    await fs.rename(tempFinalPath, finalPath);
+
+    // Construire les segments avec durées réelles via ffprobe
     const segments = [];
     let cursor = 0;
-
     for (const [index, track] of tracks.entries()) {
-      const inputPath = path.join(buildDir, `input-${String(index).padStart(4, '0')}${extensionForContentType(track.contentType)}`);
-      const segmentPath = path.join(buildDir, `segment-${String(index).padStart(4, '0')}.mp3`);
-
-      await downloadCloudObjectToFile(track.key, inputPath);
-      await runFfmpeg([
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-nostdin',
-        '-y',
-        '-i',
-        inputPath,
-        '-map',
-        '0:a:0',
-        '-vn',
-        '-ar',
-        '44100',
-        '-ac',
-        '2',
-        '-codec:a',
-        'libmp3lame',
-        '-b:a',
-        '160k',
-        '-f',
-        'mp3',
-        segmentPath,
-      ], 10 * 60 * 1000);
-
-      const probedDuration = await probeAudioDuration(segmentPath);
-      const estimatedDuration = await estimateMp3Duration(segmentPath);
-      const duration = Math.max(1, probedDuration || track.durationSeconds || estimatedDuration || 1);
+      const probedDuration = await probeAudioDuration(signedUrls[index]);
+      const duration = Math.max(1, probedDuration || track.durationSeconds || 180);
       const start = cursor;
       const end = start + duration;
-      segmentPaths.push(segmentPath);
       segments.push({
         duration,
         end,
@@ -861,30 +869,6 @@ async function buildCloudQueueFile(id, tracks) {
       });
       cursor = end;
     }
-
-    const concatPath = path.join(buildDir, 'concat.txt');
-    await fs.writeFile(
-      concatPath,
-      segmentPaths.map((filePath) => `file '${escapeFfmpegConcatPath(filePath)}'`).join('\n'),
-      'utf8',
-    );
-    await runFfmpeg([
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-nostdin',
-      '-y',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      concatPath,
-      '-c',
-      'copy',
-      tempFinalPath,
-    ], 10 * 60 * 1000);
-    await fs.rename(tempFinalPath, finalPath);
 
     const meta = {
       createdAt: Date.now(),
@@ -919,7 +903,7 @@ function runFfprobe(args, timeoutMs = 30_000) {
   return runProcess(ffprobePath, args, timeoutMs, 'ffprobe');
 }
 
-async function probeAudioDuration(filePath) {
+async function probeAudioDuration(filePathOrUrl) {
   try {
     const { stdout } = await runFfprobe([
       '-v',
@@ -928,7 +912,7 @@ async function probeAudioDuration(filePath) {
       'format=duration',
       '-of',
       'json',
-      filePath,
+      filePathOrUrl,
     ], 20_000);
     const payload = JSON.parse(stdout);
     const duration = Number(payload?.format?.duration || 0);
