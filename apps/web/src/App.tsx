@@ -1537,7 +1537,7 @@ export default function App() {
     setCurrentTime(0);
     setDuration(parseDisplayDuration(track.duration));
 
-    const isCloudTrack = track.source === 'cloud';
+    const isCloudTrack = track.source === 'cloud' && track.storageKey;
     if (!isCloudTrack) {
       if (nativeAudioActiveRef.current) {
         nativeAudioActiveRef.current = false;
@@ -1546,7 +1546,7 @@ export default function App() {
       audio?.pause();
       audio?.removeAttribute('src');
       setPlaying(false);
-      setMessage('Ce titre n est pas un fichier Cloud. Importe-le dans le Cloud pour le lire proprement.');
+      setMessage(`Ce titre n est pas un fichier Cloud valide. ${track.source ? 'Importe-le dans le Cloud pour le lire proprement.' : 'Cle stockage manquante.'}`)
       return;
     }
 
@@ -1638,22 +1638,21 @@ export default function App() {
     let source = '';
     try {
       source = await resolveCloudPlaybackUrl(track);
+      if (!source || !source.trim()) {
+        throw new Error('API: URL source vide retournée');
+      }
     } catch (error) {
       setPlaying(false);
-      setMessage(errorMessage(error));
-      return;
-    }
-    if (!source) {
-      setPlaying(false);
-      setMessage('Fichier Cloud introuvable.');
+      setMessage(`Impossible de charger le fichier Cloud: ${errorMessage(error)}`);
       return;
     }
 
-    if (!options.skipProbe) setMessage('');
+    if (!options.skipProbe) setMessage('Chargement du fichier Cloud...');
 
     audio.pause();
     audio.removeAttribute('src');
     audio.preload = 'auto';
+    audio.crossOrigin = 'anonymous';
     audio.volume = volume;
     audio.src = source;
     audio.load();
@@ -1662,7 +1661,7 @@ export default function App() {
       setPlaying(true);
     } catch (error) {
       setPlaying(false);
-      setMessage(errorMessage(error));
+      setMessage(`Lecture impossible: ${errorMessage(error)}`);
     }
   };
 

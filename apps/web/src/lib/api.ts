@@ -244,7 +244,11 @@ export async function resolveCloudPlaybackUrl(track: Track): Promise<string> {
     await detectApiHealth();
   }
 
-  if (flowifyApiBase && track.storageKey) {
+  if (!track.storageKey) {
+    throw new Error('Clé Cloud manquante: le fichier n\'a pas été uploadé correctement.');
+  }
+
+  if (flowifyApiBase) {
     const cached = signedCloudUrlCache.get(track.storageKey);
     if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
 
@@ -273,13 +277,11 @@ export async function resolveCloudPlaybackUrl(track: Track): Promise<string> {
     return cloudStreamUrl(track);
   }
 
-  // Fallback final : URL publique directe si disponible
+  // Si pas d'API Flowify, retourner URL directe
   const directUrl = cloudStreamUrl(track);
   if (!directUrl) {
     throw new Error(
-      flowifyApiBase
-        ? 'Fichier Cloud introuvable dans le bucket R2.'
-        : 'API Flowify non configurée. Va dans Paramètres > URL API Flowify et entre l\'URL de ton serveur Render.',
+      'API Flowify non configurée. Va dans Paramètres > URL API Flowify et entre l\'URL de ton serveur Render.',
     );
   }
   return directUrl;
@@ -293,8 +295,11 @@ export function streamUrl(track: Track | string): string {
 
 export function cloudStreamUrl(track: Track): string {
   if (track.url) return track.url;
-  if (flowifyApiBase && track.storageKey) {
-    return apiUrl(`/api/cloud/stream?key=${encodeURIComponent(track.storageKey)}&play=${Date.now()}`);
+  if (track.storageKey) {
+    const base = flowifyApiBase || sameOriginApiBase() || '';
+    if (base) {
+      return `${base}/api/cloud/stream?key=${encodeURIComponent(track.storageKey)}&play=${Date.now()}`;
+    }
   }
   return '';
 }
