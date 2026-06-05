@@ -1509,18 +1509,28 @@ export default function App() {
     // Important: ne pas pausepause() + play(), utilise removeAttribute + src pour eviter AbortError
     audio.removeAttribute('src');
     audio.src = queueStreamPlaybackUrl(streamUrl, nextIndex, nextOffset);
-    audio.load();
     syncPwaQueueStreamTime(nextBaseTime);
-    
-    // Attendre un peu pour que le navigateur prepare le nouveau src
-    setTimeout(() => {
+
+    const onCanPlay = () => {
+      audio.removeEventListener('canplay', onCanPlay);
+      audio.removeEventListener('error', onError);
+      if (!pwaCloudQueueStreamActiveRef.current) return;
       audio.play()
         .then(() => setPlaying(true))
         .catch((error) => {
           setPlaying(false);
           setMessage(errorMessage(error));
         });
-    }, 100);
+    };
+    const onError = () => {
+      audio.removeEventListener('canplay', onCanPlay);
+      audio.removeEventListener('error', onError);
+      setPlaying(false);
+      setMessage('Erreur chargement segment audio Cloud.');
+    };
+    audio.addEventListener('canplay', onCanPlay, { once: true });
+    audio.addEventListener('error', onError, { once: true });
+    audio.load();
     return true;
   };
 
@@ -1599,12 +1609,59 @@ export default function App() {
       setQueueIndex(0);
       queueRef.current = pwaQueueTracks;
       queueIndexRef.current = 0;
-      setDuration(0);
+      setDuration(parseDisplayDuration(queueStartTrack.duration));
       setCurrentTime(0);
       setMessage('');
 
+      // Jouer la première piste immédiatement sans attendre le stream queue
+      let firstSource = '';
       try {
-        const stream = await createCloudQueueStream(pwaQueueTracks);
+        firstSource = await resolveCloudPlaybackUrl(queueStartTrack);
+      } catch (error) {
+        setPlaying(false);
+        setMessage(`Impossible de charger le fichier Cloud: ${errorMessage(error)}`);
+        return;
+      }
+
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.preload = 'auto';
+      audio.crossOrigin = 'anonymous';
+      audio.volume = volume;
+      audio.src = firstSource;
+      audio.load();
+      pwaCloudQueueStreamActiveRef.current = false;
+
+      const playPromise = new Promise<void>((resolve, reject) => {
+        const onCanPlay = () => {
+          audio.removeEventListener('canplay', onCanPlay);
+          audio.removeEventListener('error', onErr);
+          audio.play().then(resolve).catch(reject);
+        };
+        const onErr = () => {
+          audio.removeEventListener('canplay', onCanPlay);
+          audio.removeEventListener('error', onErr);
+          reject(new Error('Erreur chargement audio'));
+        };
+        audio.addEventListener('canplay', onCanPlay, { once: true });
+        audio.addEventListener('error', onErr, { once: true });
+      });
+
+      try {
+        await playPromise;
+        setPlaying(true);
+      } catch (error) {
+        setPlaying(false);
+        setMessage(`Lecture impossible: ${errorMessage(error)}`);
+        return;
+      }
+
+      // Préparer le stream queue en arrière-plan pendant que la 1ère piste joue
+      createCloudQueueStream(pwaQueueTracks).then((stream) => {
+        // Vérifier que c'est encore la même session de lecture
+        if (currentTrackRef.current?.id !== queueStartTrack.id) return;
+        if (pwaCloudQueueStreamActiveRef.current) return;
+
         const usableSegments = stream.segments.filter((segment) => (
           Number.isFinite(segment.start) &&
           Number.isFinite(segment.duration) &&
@@ -1612,31 +1669,44 @@ export default function App() {
           segment.index >= 0 &&
           segment.index < pwaQueueTracks.length
         ));
-        if (!usableSegments.length) throw new Error('File Cloud preparee sans duree lisible.');
+        if (!usableSegments.length) return;
+
+        // Calculer la position actuelle dans la 1ère piste pour rejoindre le stream
+        const currentAudioTime = audio.currentTime || 0;
+        const firstSegment = usableSegments[0];
+        if (!firstSegment) return;
 
         pwaCloudQueueSegmentsRef.current = usableSegments;
         pwaCloudQueueDurationRef.current = stream.duration || usableSegments[usableSegments.length - 1]?.end || 0;
         pwaCloudQueueStreamUrlRef.current = stream.url;
-        pwaCloudQueueBaseTimeRef.current = 0;
+        pwaCloudQueueBaseTimeRef.current = currentAudioTime;
+        syncPwaQueueStreamTime(currentAudioTime);
+
+        // Basculer vers le stream queue avec la position actuelle
+        const streamSrc = queueStreamPlaybackUrl(stream.url, 0, currentAudioTime);
+        const wasPlaying = !audio.paused;
         audio.pause();
         audio.removeAttribute('src');
         audio.preload = 'auto';
+        audio.crossOrigin = 'anonymous';
         audio.volume = volume;
-        audio.src = queueStreamPlaybackUrl(stream.url, 0, 0);
-        audio.load();
+        audio.src = streamSrc;
         pwaCloudQueueStreamActiveRef.current = true;
-        syncPwaQueueStreamTime(0);
-        await audio.play();
-        setPlaying(true);
-      } catch (error) {
-        pwaCloudQueueStreamActiveRef.current = false;
-        pwaCloudQueueStreamUrlRef.current = '';
-        pwaCloudQueueBaseTimeRef.current = 0;
-        pwaCloudQueueSegmentsRef.current = [];
-        pwaCloudQueueDurationRef.current = 0;
-        setPlaying(false);
-        setMessage(errorMessage(error));
-      }
+
+        if (wasPlaying) {
+          const onCanPlayStream = () => {
+            audio.removeEventListener('canplay', onCanPlayStream);
+            if (!pwaCloudQueueStreamActiveRef.current) return;
+            audio.play().catch(() => undefined);
+          };
+          audio.addEventListener('canplay', onCanPlayStream, { once: true });
+        }
+        audio.load();
+      }).catch(() => {
+        // Le stream queue a échoué, continuer avec la lecture piste par piste
+        // (le mécanisme advanceFromPlaybackEnd prendra le relais)
+      });
+
       return;
     }
 
@@ -1660,15 +1730,26 @@ export default function App() {
     audio.crossOrigin = 'anonymous';
     audio.volume = volume;
     audio.src = source;
-    audio.load();
-    setTimeout(() => {
+
+    const onCanPlaySingle = () => {
+      audio.removeEventListener('canplay', onCanPlaySingle);
+      audio.removeEventListener('error', onErrSingle);
       audio.play()
         .then(() => setPlaying(true))
         .catch((error) => {
           setPlaying(false);
           setMessage(`Lecture impossible: ${errorMessage(error)}`);
         });
-    }, 50);
+    };
+    const onErrSingle = () => {
+      audio.removeEventListener('canplay', onCanPlaySingle);
+      audio.removeEventListener('error', onErrSingle);
+      setPlaying(false);
+      setMessage('Erreur chargement fichier audio Cloud.');
+    };
+    audio.addEventListener('canplay', onCanPlaySingle, { once: true });
+    audio.addEventListener('error', onErrSingle, { once: true });
+    audio.load();
   };
 
   const seekCurrentTrack = (nextTime: number) => {
@@ -1848,37 +1929,44 @@ export default function App() {
 
   useEffect(() => {
     if (!playing || currentTrack?.source !== 'cloud' || nativeAudioActiveRef.current) return undefined;
-    const timer = window.setInterval(() => {
-      const audio = audioRef.current;
-      if (!audio) return;
-      if (audio.ended) {
-        if (pwaCloudQueueStreamActiveRef.current) {
-          if (repeatEnabledRef.current && pwaCloudQueueSegmentsRef.current.length) {
-            seekPwaQueueSegment(0, 0);
-          } else {
-            // Avancer au segment suivant dans le stream
-            const segments = pwaCloudQueueSegmentsRef.current;
-            const currentGlobalTime = pwaCloudQueueBaseTimeRef.current + (audio.currentTime || 0);
-            const currentSegment = findPwaQueueSegment(segments, currentGlobalTime);
-            const nextIndex = (currentSegment?.index ?? -1) + 1;
-            if (nextIndex < segments.length) {
-              seekPwaQueueSegment(nextIndex, 0);
-            } else {
-              setPlaying(false);
-              syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audio.currentTime || pwaCloudQueueDurationRef.current));
-            }
-          }
-          return;
-        }
-        advanceFromPlaybackEnd();
-        return;
-      }
+    const audio = audioRef.current;
+    if (!audio) return undefined;
+
+    const onTimeUpdate = () => {
       if (!audio.paused) {
         syncCloudPlaybackTime(audio);
       }
-    }, 700);
+    };
 
-    return () => window.clearInterval(timer);
+    const onEnded = () => {
+      if (pwaCloudQueueStreamActiveRef.current) {
+        if (repeatEnabledRef.current && pwaCloudQueueSegmentsRef.current.length) {
+          seekPwaQueueSegment(0, 0);
+        } else {
+          // Avancer au segment suivant dans le stream
+          const segments = pwaCloudQueueSegmentsRef.current;
+          const currentGlobalTime = pwaCloudQueueBaseTimeRef.current + (audio.currentTime || 0);
+          const currentSegment = findPwaQueueSegment(segments, currentGlobalTime);
+          const nextIndex = (currentSegment?.index ?? -1) + 1;
+          if (nextIndex < segments.length) {
+            seekPwaQueueSegment(nextIndex, 0);
+          } else {
+            setPlaying(false);
+            syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audio.currentTime || pwaCloudQueueDurationRef.current));
+          }
+        }
+        return;
+      }
+      advanceFromPlaybackEnd();
+    };
+
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('ended', onEnded);
+
+    return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('ended', onEnded);
+    };
   }, [currentTrack?.id, currentTrack?.source, playing]);
 
   const statusLabel = useMemo(() => {

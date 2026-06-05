@@ -409,7 +409,18 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => {
+// Gérer SIGTERM proprement (Render endort le service)
+process.on('SIGTERM', () => {
+  console.log('[shutdown] SIGTERM reçu, fermeture propre...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('[shutdown] SIGINT reçu, fermeture propre...');
+  process.exit(0);
+});
+
+const server = app.listen(port, () => {
   console.log(`Flowify API listening on http://localhost:${port}`);
 
   const selfPingUrl = process.env.RENDER_EXTERNAL_URL
@@ -417,7 +428,7 @@ app.listen(port, () => {
     : null;
 
   if (selfPingUrl) {
-    const PING_INTERVAL_MS = 14 * 60 * 1000;
+    const PING_INTERVAL_MS = 4 * 60 * 1000;
     setInterval(async () => {
       try {
         const response = await fetch(selfPingUrl, { signal: AbortSignal.timeout(10_000) });
@@ -429,6 +440,8 @@ app.listen(port, () => {
     console.log(`[keepalive] auto-ping activé → ${selfPingUrl}`);
   }
 });
+
+process.on('SIGTERM', () => { server.close(); process.exit(0); });
 
 async function youtubeFetch(req, endpoint, params) {
   const activeYoutubeApiKey = getYoutubeApiKey(req);
@@ -884,6 +897,7 @@ async function streamCloudQueue(tracks, req, res, options = {}) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Accept-Ranges', 'none');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
   res.flushHeaders?.();
 
   const ffmpeg = spawn(ffmpegPath, [
@@ -899,6 +913,8 @@ async function streamCloudQueue(tracks, req, res, options = {}) {
     '1',
     '-reconnect_delay_max',
     '5',
+    '-reconnect_on_network_error',
+    '1',
     '-f',
     'concat',
     '-safe',
