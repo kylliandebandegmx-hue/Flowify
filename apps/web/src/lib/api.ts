@@ -234,15 +234,23 @@ export async function createCloudQueueStream(tracks: Track[]): Promise<CloudQueu
 }
 
 export async function resolveCloudPlaybackUrl(track: Track): Promise<string> {
-  await detectApiHealth();
+  // S'assurer que flowifyApiBase est initialisé même si le health check est bloqué
+  if (!flowifyApiBase) {
+    await detectApiHealth();
+  }
+
   if (flowifyApiBase && track.storageKey) {
     const cached = signedCloudUrlCache.get(track.storageKey);
     if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
 
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
       const response = await fetch(apiUrl(`/api/cloud/signed-url?key=${encodeURIComponent(track.storageKey)}`), {
         cache: 'no-store',
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
       const payload = await response.json().catch(() => ({}));
       if (response.ok && typeof payload.url === 'string' && payload.url) {
         const expiresIn = Number(payload.expiresIn || 3600);
@@ -253,11 +261,23 @@ export async function resolveCloudPlaybackUrl(track: Track): Promise<string> {
         return payload.url;
       }
     } catch {
-      // Fall back to the public URL or the API proxy below.
+      // Signed URL indisponible — fallback vers le proxy stream direct.
     }
+
+    // Fallback : proxy stream direct via l'API
+    return cloudStreamUrl(track);
   }
 
-  return cloudStreamUrl(track);
+  // Fallback final : URL publique directe si disponible
+  const directUrl = cloudStreamUrl(track);
+  if (!directUrl) {
+    throw new Error(
+      flowifyApiBase
+        ? 'Fichier Cloud introuvable dans le bucket R2.'
+        : 'API Flowify non configurée. Va dans Paramètres > URL API Flowify et entre l\'URL de ton serveur Render.',
+    );
+  }
+  return directUrl;
 }
 
 export function streamUrl(track: Track | string): string {
@@ -424,9 +444,22 @@ function parseTrackDuration(value: string): number {
 
 async function detectApiHealth(): Promise<ApiHealth | null> {
   const candidates = await apiBaseCandidates();
+
+  // Assigner flowifyApiBase depuis la première URL connue, même sans
+  // confirmation réseau — le health check peut être bloqué par un ad-blocker.
+  if (!flowifyApiBase && candidates.length > 0) {
+    flowifyApiBase = candidates[0];
+  }
+
   for (const candidate of candidates) {
     try {
-      const response = await fetch(`${candidate}/health`, { headers: apiHeaders() });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const response = await fetch(`${candidate}/health`, {
+        headers: apiHeaders(),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
       const payload = (await response.json()) as ApiHealth;
       if (response.ok) {
         flowifyApiBase = candidate;
@@ -440,15 +473,29 @@ async function detectApiHealth(): Promise<ApiHealth | null> {
         };
       }
     } catch {
-      // Try the next candidate.
+      // Requête bloquée (ad-blocker) ou serveur hors ligne — on continue.
+      // flowifyApiBase est déjà assigné plus haut, la lecture peut quand même fonctionner.
     }
   }
+
+  // Le health check a échoué (ad-blocker, Render en veille, etc.)
+  // mais on retourne un état partiel pour ne pas bloquer la lecture.
+  if (flowifyApiBase) {
+    return {
+      ok: false,
+      youtubeConfigured: false,
+      ytdlpAvailable: false,
+      apiReachable: false,
+      cloudStorageAvailable: true, // Optimiste — R2 peut fonctionner sans /health
+    };
+  }
+
   return null;
 }
 
 async function apiBaseCandidates(): Promise<string[]> {
   const runtimeConfig = await readRuntimeConfig();
-  return uniqueValues([
+  const candidates = uniqueValues([
     flowifyApiBase,
     import.meta.env.VITE_FLOWIFY_API_URL,
     runtimeConfig.apiBaseUrl,
@@ -456,6 +503,15 @@ async function apiBaseCandidates(): Promise<string[]> {
     sameOriginApiBase(),
     defaultLocalApiBase(),
   ].map((value) => normalizeApiBase(value || '')));
+
+  // Initialiser flowifyApiBase dès maintenant si possible, sans attendre
+  // la confirmation du health check (qui peut être bloqué par un ad-blocker).
+  if (!flowifyApiBase && candidates.length > 0) {
+    flowifyApiBase = candidates[0];
+    writeStorage(FLOWIFY_API_STORAGE_KEY, flowifyApiBase);
+  }
+
+  return candidates;
 }
 
 async function readRuntimeConfig(): Promise<{ apiBaseUrl?: string }> {
