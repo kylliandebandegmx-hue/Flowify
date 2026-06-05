@@ -12,11 +12,11 @@ COPY package*.json ./
 COPY apps/web/package*.json apps/web/
 COPY apps/api/package*.json apps/api/
 
-RUN npm ci --no-optional
+RUN npm ci --include=dev
 
 COPY . .
 
-RUN chmod +x node_modules/.bin/* 2>/dev/null || true && npm run build:web
+RUN npm run build:web
 
 FROM node:22-bookworm-slim
 
@@ -29,10 +29,9 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY package*.json ./
-COPY apps/web/package*.json apps/web/
 COPY apps/api/package*.json apps/api/
 
-RUN npm ci --omit=dev --no-optional
+RUN npm ci --omit=dev --workspace apps/api
 
 COPY --from=builder /app/apps/web/dist ./apps/web/dist
 COPY apps/api ./apps/api
