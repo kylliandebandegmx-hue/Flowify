@@ -1,11 +1,4 @@
-function calculateRangeFromSegment(segments, startIndex, offset) {
-  if (!segments.length) return null;
-  const segment = segments.find((s) => s.index === startIndex);
-  if (!segment) return null;
-  // Byte offset approx : (segment.start + offset) / totalDuration * fileSize
-  // Pour simplicité, on retourne null et on laisse le navigateur faire le seek
-  return null;
-}import cors from 'cors';
+import cors from 'cors';
 import 'dotenv/config';
 import express from 'express';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -52,7 +45,6 @@ const staticDir = path.resolve(
 
 const streamBuilds = new Map();
 const cloudQueueStreams = new Map();
-const cloudQueueBuilds = new Map();
 const cloudQueueStreamTtlMs = 2 * 60 * 60 * 1000;
 const videoIdPattern = /^[A-Za-z0-9_-]{11}$/;
 let r2ClientInstance = null;
@@ -301,15 +293,7 @@ app.post('/api/cloud/queue-streams', async (req, res, next) => {
     const segments = cloudQueueSegments(tracks);
     const duration = segments[segments.length - 1]?.end || 0;
     cleanupCloudQueueStreams();
-    
-    // Si plusieurs tracks, mettre dans la cache de construction (pas en memory)
-    if (tracks.length > 1) {
-      // Lancer la construction en arriere-plan
-      ensureCloudQueueFile(id, tracks).catch((err) => {
-        console.error(`Failed to build cloud queue ${id}:`, err?.message || err);
-      });
-    }
-    
+
     cloudQueueStreams.set(id, {
       createdAt: Date.now(),
       duration,
@@ -325,7 +309,7 @@ app.post('/api/cloud/queue-streams', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});;
+});
 
 app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
   try {
@@ -338,30 +322,12 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
     }
     if (!queue) throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
     if (!Array.isArray(queue.tracks) || !queue.tracks.length) {
-      if (queue.filePath) {
-        await sendAudioFile(queue.filePath, req, res, 'audio/mpeg');
-        return;
-      }
       throw httpError(404, 'File audio Cloud expiree. Relance la playlist.');
     }
 
-    // Extraire les parametres de segment
     const startIndex = clamp(Number(req.query.startIndex || 0), 0, queue.tracks.length - 1);
     const offset = clampSeconds(Number(req.query.offset || 0), 0, 24 * 60 * 60);
 
-    // Si plusieurs musiques, les concatener avec ffmpeg d'abord
-    if (queue.tracks.length > 1) {
-      const meta = await ensureCloudQueueFile(id, queue.tracks);
-      // Streamer a partir du segment demandé
-      const range = calculateRangeFromSegment(meta.segments, startIndex, offset);
-      if (range) {
-        res.setHeader('Range', `bytes=${range.start}-${range.end}`);
-      }
-      await sendAudioFile(meta.filePath, req, res, 'audio/mpeg', range);
-      return;
-    }
-
-    // Sinon stream direct depuis R2
     await streamCloudQueue(queue.tracks, req, res, {
       startIndex,
       startOffset: offset,
@@ -369,7 +335,7 @@ app.get('/api/cloud/queue-streams/:id', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});;;
+});
 
 app.post('/api/cloud/delete', async (req, res, next) => {
   try {
@@ -806,111 +772,6 @@ async function readCloudQueueMeta(id) {
   }
 }
 
-async function ensureCloudQueueFile(id, tracks) {
-  const existing = await readCloudQueueMeta(id);
-  if (existing) return existing;
-
-  if (!cloudQueueBuilds.has(id)) {
-    cloudQueueBuilds.set(id, buildCloudQueueFile(id, tracks).finally(() => {
-      cloudQueueBuilds.delete(id);
-    }));
-  }
-
-  return cloudQueueBuilds.get(id);
-}
-
-async function buildCloudQueueFile(id, tracks) {
-  await fs.mkdir(cloudQueueDir, { recursive: true });
-  const finalPath = path.join(cloudQueueDir, `${id}.mp3`);
-  const metaPath = path.join(cloudQueueDir, `${id}.json`);
-  const tempFinalPath = path.join(cloudQueueDir, `${id}.${randomUUID()}.part.mp3`);
-  const buildDir = path.join(cloudQueueDir, `${id}-${randomUUID()}`);
-  await fs.mkdir(buildDir, { recursive: true });
-
-  try {
-    // Au lieu de télécharger, utiliser les URLs signées directement avec ffmpeg
-    // Cela évite de stocker les fichiers en mémoire/disque
-    const signedUrls = await Promise.all(
-      tracks.map((track) =>
-        getSignedUrl(getR2Client(), new GetObjectCommand({
-          Bucket: r2Bucket,
-          Key: track.key,
-        }), { expiresIn: 3600 }),
-      ),
-    );
-
-    const concatPath = path.join(buildDir, 'concat.txt');
-    const concatLines = signedUrls.map((url) => `file '${escapeFfmpegConcatPath(url)}'`).join('\n');
-    await fs.writeFile(concatPath, concatLines, 'utf8');
-
-    // Utiliser ffmpeg concat demuxer directement sur les URLs R2 signées
-    // Ça stream directement sans télécharger
-    await runFfmpeg([
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-nostdin',
-      '-y',
-      '-protocol_whitelist',
-      'file,http,https,tcp,tls,crypto',
-      '-f',
-      'concat',
-      '-safe',
-      '0',
-      '-i',
-      concatPath,
-      '-c',
-      'copy',
-      '-f',
-      'mp3',
-      tempFinalPath,
-    ], 30 * 60 * 1000);
-    await fs.rename(tempFinalPath, finalPath);
-
-    // Construire les segments avec durées réelles via ffprobe
-    const segments = [];
-    let cursor = 0;
-    for (const [index, track] of tracks.entries()) {
-      const probedDuration = await probeAudioDuration(signedUrls[index]);
-      const duration = Math.max(1, probedDuration || track.durationSeconds || 180);
-      const start = cursor;
-      const end = start + duration;
-      segments.push({
-        duration,
-        end,
-        index,
-        key: track.key,
-        start,
-        title: track.title,
-      });
-      cursor = end;
-    }
-
-    const meta = {
-      createdAt: Date.now(),
-      duration: cursor,
-      filePath: finalPath,
-      segments,
-    };
-    await fs.writeFile(metaPath, JSON.stringify(meta), 'utf8');
-    return meta;
-  } catch (error) {
-    await fs.rm(tempFinalPath, { force: true }).catch(() => undefined);
-    throw error;
-  } finally {
-    await fs.rm(buildDir, { force: true, recursive: true }).catch(() => undefined);
-  }
-}
-
-async function downloadCloudObjectToFile(key, filePath) {
-  const object = await getR2Client().send(new GetObjectCommand({
-    Bucket: r2Bucket,
-    Key: key,
-  }));
-  if (!object.Body) throw httpError(404, 'Fichier Cloud introuvable');
-  await pipeline(await cloudBodyToReadable(object.Body), createWriteStream(filePath));
-}
-
 function runFfmpeg(args, timeoutMs = 60_000) {
   return runProcess(ffmpegPath, args, timeoutMs, 'ffmpeg');
 }
@@ -933,15 +794,6 @@ async function probeAudioDuration(filePathOrUrl) {
     const payload = JSON.parse(stdout);
     const duration = Number(payload?.format?.duration || 0);
     return Number.isFinite(duration) && duration > 0 ? duration : 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function estimateMp3Duration(filePath) {
-  try {
-    const stat = await fs.stat(filePath);
-    return stat.size > 0 ? (stat.size * 8) / 160000 : 0;
   } catch {
     return 0;
   }
@@ -1101,72 +953,6 @@ async function streamCloudQueue(tracks, req, res, options = {}) {
   ffmpeg.stdout.pipe(res, { end: false });
 }
 
-async function transcodeCloudObjectToResponse(body, res) {
-  const input = await cloudBodyToReadable(body);
-  return new Promise((resolve, reject) => {
-    const ffmpeg = spawn(ffmpegPath, [
-      '-hide_banner',
-      '-loglevel',
-      'error',
-      '-nostdin',
-      '-i',
-      'pipe:0',
-      '-vn',
-      '-codec:a',
-      'libmp3lame',
-      '-b:a',
-      '160k',
-      '-f',
-      'mp3',
-      'pipe:1',
-    ], { windowsHide: true });
-
-    let stderr = '';
-    let settled = false;
-    const onResponseClose = () => {
-      ffmpeg.kill('SIGTERM');
-      finish();
-    };
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      res.off?.('close', onResponseClose);
-      input.destroy?.();
-      if (error) reject(error);
-      else resolve();
-    };
-
-    input.on?.('error', (error) => {
-      ffmpeg.stdin.destroy(error);
-    });
-    res.once('close', onResponseClose);
-    ffmpeg.stdin.on('error', () => undefined);
-    ffmpeg.stdout.on('error', (error) => {
-      finish(res.destroyed ? undefined : error);
-    });
-    ffmpeg.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-    ffmpeg.on('error', (error) => {
-      finish(httpError(500, `ffmpeg failed to start: ${error.message}`));
-    });
-    ffmpeg.on('close', (code) => {
-      if (res.destroyed || res.writableEnded) {
-        finish();
-        return;
-      }
-      if (code !== 0) {
-        finish(httpError(502, `ffmpeg exited with code ${code}: ${stderr}`));
-        return;
-      }
-      finish();
-    });
-
-    input.pipe(ffmpeg.stdin);
-    ffmpeg.stdout.pipe(res, { end: false });
-  });
-}
-
 async function cloudBodyToReadable(body) {
   if (typeof body.pipe === 'function') return body;
   if (typeof body.transformToWebStream === 'function') {
@@ -1186,7 +972,6 @@ function ensureCloudKey(value) {
   if (key.includes('..')) {
     throw httpError(400, 'Cle cloud invalide: traversal detecte');
   }
-  // Accepter aussi les clés sans le préfixe 'cloud/' pour la rétrocompatibilité
   return key;
 }
 
