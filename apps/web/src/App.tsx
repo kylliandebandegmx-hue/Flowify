@@ -1,4 +1,5 @@
 import type { Session, User } from '@supabase/supabase-js';
+import { startAudioKeepAlive, stopAudioKeepAlive, unlockAudioContext } from './lib/audioKeepAlive';
 import {
   Check,
   CircleAlert,
@@ -337,6 +338,18 @@ export default function App() {
     }
   }, [playing]);
 
+  // Keepalive audio : maintient la lecture active quand l'écran est verrouillé
+  useEffect(() => {
+    if (playing && currentTrack?.source === 'cloud') {
+      void startAudioKeepAlive();
+    } else {
+      stopAudioKeepAlive();
+    }
+    return () => {
+      if (!playing) stopAudioKeepAlive();
+    };
+  }, [playing, currentTrack?.source]);
+
   useEffect(() => {
     if (!currentTrack || !('mediaSession' in navigator)) return;
     const artwork = currentTrack.thumbnail
@@ -430,7 +443,23 @@ export default function App() {
       }
     };
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void requestWakeLock();
+      if (document.visibilityState === 'visible') {
+        void requestWakeLock();
+        // Reprendre la lecture si le navigateur l'a suspendue pendant le verrouillage
+        const audio = audioRef.current;
+        if (
+          audio &&
+          !nativeAudioActiveRef.current &&
+          !pwaCloudQueueStreamActiveRef.current &&
+          playing &&
+          currentTrackRef.current?.source === 'cloud' &&
+          audio.paused &&
+          audio.src &&
+          !audio.ended
+        ) {
+          void audio.play().catch(() => undefined);
+        }
+      }
     };
 
     if (playing && currentTrack?.source === 'cloud' && !nativeAudioActiveRef.current) {
@@ -1822,8 +1851,17 @@ export default function App() {
           if (repeatEnabledRef.current && pwaCloudQueueSegmentsRef.current.length) {
             seekPwaQueueSegment(0, 0);
           } else {
-            setPlaying(false);
-            syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audio.currentTime || pwaCloudQueueDurationRef.current));
+            // Avancer au segment suivant dans le stream
+            const segments = pwaCloudQueueSegmentsRef.current;
+            const currentGlobalTime = pwaCloudQueueBaseTimeRef.current + (audio.currentTime || 0);
+            const currentSegment = findPwaQueueSegment(segments, currentGlobalTime);
+            const nextIndex = (currentSegment?.index ?? -1) + 1;
+            if (nextIndex < segments.length) {
+              seekPwaQueueSegment(nextIndex, 0);
+            } else {
+              setPlaying(false);
+              syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audio.currentTime || pwaCloudQueueDurationRef.current));
+            }
           }
           return;
         }
@@ -1854,7 +1892,7 @@ export default function App() {
   }, [activePlaylist?.name, view]);
 
   return (
-    <div className={user ? 'app-shell' : 'app-shell auth-mode'}>
+    <div className={user ? 'app-shell' : 'app-shell auth-mode'} onClick={unlockAudioContext} onTouchStart={unlockAudioContext}>
       <audio
         ref={audioRef}
         preload="auto"
@@ -1869,8 +1907,17 @@ export default function App() {
             if (repeatEnabledRef.current && pwaCloudQueueSegmentsRef.current.length) {
               seekPwaQueueSegment(0, 0);
             } else {
-              setPlaying(false);
-              syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audioRef.current?.currentTime || pwaCloudQueueDurationRef.current));
+              // Avancer au segment suivant dans le stream, ou terminer
+              const segments = pwaCloudQueueSegmentsRef.current;
+              const currentGlobalTime = pwaCloudQueueBaseTimeRef.current + (audioRef.current?.currentTime || 0);
+              const currentSegment = findPwaQueueSegment(segments, currentGlobalTime);
+              const nextIndex = (currentSegment?.index ?? -1) + 1;
+              if (nextIndex < segments.length) {
+                seekPwaQueueSegment(nextIndex, 0);
+              } else {
+                setPlaying(false);
+                syncPwaQueueStreamTime(pwaCloudQueueBaseTimeRef.current + (audioRef.current?.currentTime || pwaCloudQueueDurationRef.current));
+              }
             }
             return;
           }

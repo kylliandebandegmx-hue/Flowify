@@ -1,3 +1,6 @@
+// Service Worker Flowify — avec support audio background
+const CACHE_NAME = 'flowify-v1';
+
 self.addEventListener('install', () => {
   self.skipWaiting();
 });
@@ -31,4 +34,16 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     fetch(new Request(request, { cache: 'no-store' })).catch(() => fetch(request)),
   );
+});
+
+// Maintien du SW actif pendant la lecture audio
+// Le client envoie 'audio-playing' pour garder le SW éveillé
+self.addEventListener('message', (event) => {
+  if (event.data === 'audio-playing') {
+    // Répondre pour confirmer que le SW est actif
+    event.ports[0]?.postMessage('alive');
+  }
+  if (event.data === 'skip-waiting') {
+    self.skipWaiting();
+  }
 });

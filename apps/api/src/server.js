@@ -403,6 +403,24 @@ app.use((err, _req, res, _next) => {
 
 app.listen(port, () => {
   console.log(`Flowify API listening on http://localhost:${port}`);
+
+  // Auto-ping toutes les 14 minutes pour éviter le cold start Render (veille après 15 min)
+  const selfPingUrl = process.env.RENDER_EXTERNAL_URL
+    ? `${process.env.RENDER_EXTERNAL_URL}/health`
+    : null;
+
+  if (selfPingUrl) {
+    const PING_INTERVAL_MS = 14 * 60 * 1000;
+    setInterval(async () => {
+      try {
+        const response = await fetch(selfPingUrl, { signal: AbortSignal.timeout(10_000) });
+        console.log(`[keepalive] ping ${selfPingUrl} → ${response.status}`);
+      } catch (err) {
+        console.warn(`[keepalive] ping failed: ${err?.message || err}`);
+      }
+    }, PING_INTERVAL_MS);
+    console.log(`[keepalive] auto-ping activé → ${selfPingUrl}`);
+  }
 });
 
 async function youtubeFetch(req, endpoint, params) {
