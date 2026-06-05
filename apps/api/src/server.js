@@ -235,13 +235,18 @@ app.get('/api/cloud/stream', async (req, res, next) => {
       Range: req.headers.range,
     }));
 
+    // Force audio/mpeg content-type for reliable playback
+    const contentType = object.ContentType && object.ContentType.startsWith('audio/')
+      ? object.ContentType
+      : 'audio/mpeg';
+
     res.status(object.ContentRange ? 206 : 200);
-    if (object.ContentType) res.setHeader('Content-Type', object.ContentType);
-    else res.type('audio/mpeg');
+    res.setHeader('Content-Type', contentType);
     if (object.ContentLength !== undefined) res.setHeader('Content-Length', String(object.ContentLength));
     if (object.ContentRange) res.setHeader('Content-Range', object.ContentRange);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     if (!object.Body) {
       res.end();
@@ -255,13 +260,14 @@ app.get('/api/cloud/stream', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
+}}
 
 app.get('/api/cloud/signed-url', async (req, res, next) => {
   try {
     if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
     const key = ensureCloudKey(String(req.query.key || ''));
     const expiresIn = clamp(Number(req.query.expiresIn || 3600), 60, 3600);
+
     const url = await getSignedUrl(getR2Client(), new GetObjectCommand({
       Bucket: r2Bucket,
       Key: key,
