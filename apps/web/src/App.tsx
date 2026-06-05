@@ -1595,7 +1595,7 @@ export default function App() {
       queueIndexRef.current = 0;
       setDuration(0);
       setCurrentTime(0);
-      setMessage('Preparation lecture verrouillee...');
+      setMessage('');
 
       try {
         const stream = await createCloudQueueStream(pwaQueueTracks);
@@ -1620,7 +1620,6 @@ export default function App() {
         audio.load();
         pwaCloudQueueStreamActiveRef.current = true;
         syncPwaQueueStreamTime(0);
-        setMessage('');
         await audio.play();
         setPlaying(true);
       } catch (error) {

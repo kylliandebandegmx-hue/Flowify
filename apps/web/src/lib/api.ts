@@ -239,52 +239,24 @@ export async function createCloudQueueStream(tracks: Track[]): Promise<CloudQueu
 }
 
 export async function resolveCloudPlaybackUrl(track: Track): Promise<string> {
-  // S'assurer que flowifyApiBase est initialisé même si le health check est bloqué
-  if (!flowifyApiBase) {
-    await detectApiHealth();
-  }
-
   if (!track.storageKey) {
     throw new Error('Clé Cloud manquante: le fichier n\'a pas été uploadé correctement.');
   }
 
-  if (flowifyApiBase) {
-    const cached = signedCloudUrlCache.get(track.storageKey);
-    if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
-
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-      const response = await fetch(apiUrl(`/api/cloud/signed-url?key=${encodeURIComponent(track.storageKey)}`), {
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      const payload = await response.json().catch(() => ({}));
-      if (response.ok && typeof payload.url === 'string' && payload.url) {
-        const expiresIn = Number(payload.expiresIn || 3600);
-        signedCloudUrlCache.set(track.storageKey, {
-          expiresAt: Date.now() + Math.max(60, expiresIn - 30) * 1000,
-          url: payload.url,
-        });
-        return payload.url;
-      }
-    } catch {
-      // Signed URL indisponible — fallback vers le proxy stream direct.
-    }
-
-    // Fallback : proxy stream direct via l'API
-    return cloudStreamUrl(track);
-  }
-
-  // Si pas d'API Flowify, retourner URL directe
+  // Fallback immédiat : proxy stream direct via l'API (plus stable)
   const directUrl = cloudStreamUrl(track);
-  if (!directUrl) {
-    throw new Error(
-      'API Flowify non configurée. Va dans Paramètres > URL API Flowify et entre l\'URL de ton serveur Render.',
-    );
+  if (directUrl) {
+    return directUrl;
   }
-  return directUrl;
+
+  // Détection API en arrière-plan, sans bloquer
+  if (!flowifyApiBase) {
+    detectApiHealth().catch(() => undefined);
+  }
+
+  throw new Error(
+    'API Flowify non configurée. Va dans Paramètres > URL API Flowify et entre l\'URL de ton serveur Render.',
+  );
 }
 
 export function streamUrl(track: Track | string): string {
