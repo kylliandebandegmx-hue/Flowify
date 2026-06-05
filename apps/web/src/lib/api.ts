@@ -3,8 +3,13 @@ import type { ApiHealth, SearchResult, Track } from '../types';
 const YOUTUBE_KEY_STORAGE_KEY = 'flowify-youtube-api-key';
 const FLOWIFY_API_STORAGE_KEY = 'flowify-api-base-url';
 const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
+// Fallback immédiat synchrone : VITE env > localStorage > URL Render hardcodée.
+// flowify-config.json (async) peut surcharger cette valeur dans detectApiHealth().
+const FALLBACK_API_URL = 'https://flowify-api.onrender.com';
 let flowifyApiBase = normalizeApiBase(
-  import.meta.env.VITE_FLOWIFY_API_URL || readStorage(FLOWIFY_API_STORAGE_KEY),
+  import.meta.env.VITE_FLOWIFY_API_URL ||
+  readStorage(FLOWIFY_API_STORAGE_KEY) ||
+  FALLBACK_API_URL,
 );
 const signedCloudUrlCache = new Map<string, { expiresAt: number; url: string }>();
 
