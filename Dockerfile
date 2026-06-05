@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim as builder
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg ca-certificates curl unzip bash \
+  && apt-get install -y --no-install-recommends python3 python3-pip ffmpeg ca-certificates curl unzip \
   && curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh \
   && python3 -m pip install --break-system-packages --no-cache-dir -U yt-dlp \
   && rm -rf /var/lib/apt/lists/*
@@ -12,11 +12,12 @@ COPY package*.json ./
 COPY apps/web/package*.json apps/web/
 COPY apps/api/package*.json apps/api/
 
-RUN npm ci --prefer-offline --no-audit
+RUN npm ci
 
 COPY . .
 
-RUN bash -c "cd apps/web && ../../node_modules/.bin/tsc && ../../node_modules/.bin/vite build && node ../scripts/create-asset-aliases.mjs"
+WORKDIR /app/apps/web
+RUN npm run build
 
 FROM node:22-bookworm-slim
 
@@ -31,7 +32,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY apps/api/package*.json apps/api/
 
-RUN npm ci --omit=dev --workspace apps/api --prefer-offline --no-audit
+RUN npm ci --omit=dev --workspace apps/api
 
 COPY --from=builder /app/apps/web/dist ./apps/web/dist
 COPY apps/api ./apps/api
