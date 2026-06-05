@@ -12,11 +12,11 @@ COPY package*.json ./
 COPY apps/web/package*.json apps/web/
 COPY apps/api/package*.json apps/api/
 
-RUN npm ci --include=dev
+RUN npm ci
 
 COPY . .
 
-RUN npm run build:web
+RUN cd apps/web && npx tsc && npx vite build && node ../scripts/create-asset-aliases.mjs
 
 FROM node:22-bookworm-slim
 
