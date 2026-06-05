@@ -34,7 +34,6 @@ import {
   Users,
   Volume2,
   X,
-  Youtube,
 } from 'lucide-react';
 import {
   ChangeEvent,
@@ -46,21 +45,14 @@ import {
   useState,
 } from 'react';
 import {
-  clearYoutubeApiKey,
   clearFlowifyApiBaseUrl,
-  cloudStreamUrl,
   createCloudQueueStream,
   deleteCloudTrackObject,
-  downloadTrack,
   getFlowifyApiBaseUrl,
   getHealth,
-  getTrending,
-  getYoutubeApiKey,
   hasYtdlpAudioApi,
-  resolveYouTubeUrl,
+  resolveCloudPlaybackUrl,
   saveFlowifyApiBaseUrl,
-  saveYoutubeApiKey,
-  searchTracks,
   uploadCloudTrack,
 } from './lib/api';
 import {
@@ -101,7 +93,6 @@ type PlayTrackOptions = {
 
 const THEME_PRIMARY_KEY = 'flowify.theme.primary';
 const THEME_SECONDARY_KEY = 'flowify.theme.secondary';
-const PWA_LOCK_MODE_KEY = 'flowify.pwa-lock-mode';
 const DEFAULT_PRIMARY_COLOR = '#4BF5FB';
 const DEFAULT_SECONDARY_COLOR = '#9E43F0';
 
@@ -110,53 +101,11 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
-interface YouTubePlayer {
-  destroy: () => void;
-  getCurrentTime: () => number;
-  getDuration: () => number;
-  loadVideoById: (videoId: string) => void;
-  pauseVideo: () => void;
-  playVideo: () => void;
-  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
-  setVolume: (volume: number) => void;
-  stopVideo: () => void;
-}
-
-interface YouTubePlayerEvent {
-  data: number;
-  target: YouTubePlayer;
-}
-
-interface YouTubeApi {
-  Player: new (
-    element: HTMLElement,
-    options: {
-      height: string;
-      width: string;
-      videoId?: string;
-      playerVars?: Record<string, string | number>;
-      events?: {
-        onReady?: (event: { target: YouTubePlayer }) => void;
-        onStateChange?: (event: YouTubePlayerEvent) => void;
-      };
-    },
-  ) => YouTubePlayer;
-  PlayerState: {
-    ENDED: number;
-    PLAYING: number;
-    PAUSED: number;
-    BUFFERING: number;
-  };
-}
-
 declare global {
   interface Window {
-    YT?: YouTubeApi;
-    onYouTubeIframeAPIReady?: () => void;
+    __flowifyPwaAudio?: HTMLAudioElement;
   }
 }
-
-let youtubeApiPromise: Promise<YouTubeApi> | null = null;
 
 export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -169,9 +118,6 @@ export default function App() {
   const nativeAudioActiveRef = useRef(false);
   const pwaCloudQueueStreamActiveRef = useRef(false);
   const wakeLockRef = useRef<{ release: () => Promise<void>; released?: boolean } | null>(null);
-  const youtubeContainerRef = useRef<HTMLDivElement | null>(null);
-  const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
-  const youtubeProgressTimerRef = useRef<number | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const user = session?.user || null;
 
@@ -184,7 +130,6 @@ export default function App() {
   const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   const [query, setQuery] = useState('');
-  const [tracks, setTracks] = useState<Track[]>([]);
   const [savedTracks, setSavedTracks] = useState<Track[]>([]);
   const [cloudTracks, setCloudTracks] = useState<Track[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
@@ -197,16 +142,11 @@ export default function App() {
   const [playlistNameDraft, setPlaylistNameDraft] = useState('');
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [joinCode, setJoinCode] = useState('');
-  const [settingsYoutubeKey, setSettingsYoutubeKey] = useState(() => getYoutubeApiKey());
   const [settingsFlowifyApiUrl, setSettingsFlowifyApiUrl] = useState(() => getFlowifyApiBaseUrl());
   const [primaryColor, setPrimaryColor] = useState(() => readThemeColor(THEME_PRIMARY_KEY, DEFAULT_PRIMARY_COLOR));
   const [secondaryColor, setSecondaryColor] = useState(() => readThemeColor(THEME_SECONDARY_KEY, DEFAULT_SECONDARY_COLOR));
-  const [pwaLockMode, setPwaLockMode] = useState(() => readBooleanSetting(PWA_LOCK_MODE_KEY, false));
-  const [hasYoutubeKey, setHasYoutubeKey] = useState(() => Boolean(getYoutubeApiKey()));
   const [hasFlowifyApi, setHasFlowifyApi] = useState(() => hasYtdlpAudioApi());
-  const [nextPageToken, setNextPageToken] = useState('');
-  const [view, setView] = useState<ViewMode>('home');
-  const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<ViewMode>('cloud');
   const [playlistBusy, setPlaylistBusy] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -215,7 +155,6 @@ export default function App() {
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
-  const [youtubeVideoId, setYoutubeVideoId] = useState('');
   const [playing, setPlaying] = useState(false);
   const [shuffleEnabled, setShuffleEnabled] = useState(false);
   const [repeatEnabled, setRepeatEnabled] = useState(false);
@@ -223,7 +162,6 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [volume, setVolume] = useState(() => getInitialVolume());
   const [volumeOpen, setVolumeOpen] = useState(false);
-  const [downloadBusy, setDownloadBusy] = useState<Record<string, boolean>>({});
   const [cloudDeleteBusy, setCloudDeleteBusy] = useState<Record<string, boolean>>({});
   const [cloudUploadBusy, setCloudUploadBusy] = useState(false);
   const [selectedTrackIds, setSelectedTrackIds] = useState<Set<string>>(new Set());
@@ -247,12 +185,14 @@ export default function App() {
   const activePlaylistCanManage = Boolean(user && activePlaylist?.ownerId === user.id);
   const activePlaylistCanEdit = canEditPlaylist(activePlaylist);
 
-  const visibleTracks =
-    view === 'cloud'
-      ? cloudTracks
-      : view === 'playlists'
-        ? activePlaylist?.tracks || []
-        : tracks;
+  const baseVisibleTracks =
+    view === 'playlists'
+      ? activePlaylist?.tracks || []
+      : cloudTracks;
+  const visibleTracks = useMemo(
+    () => filterTracks(baseVisibleTracks, query),
+    [baseVisibleTracks, query],
+  );
 
   const playlistTarget = activePlaylist || playlists.find((playlist) => canEditPlaylist(playlist)) || playlists[0] || null;
   const playlistTargetCanEdit = canEditPlaylist(playlistTarget);
@@ -266,10 +206,10 @@ export default function App() {
   const currentSelectionMode = view === 'cloud' ? 'cloud' : view === 'playlists' ? 'playlist' : null;
   const selectionActive = Boolean(currentSelectionMode && selectionMode === currentSelectionMode);
   const selectableTracks = useMemo(() => {
-    if (view === 'cloud') return cloudTracks;
+    if (view === 'cloud') return visibleTracks;
     if (view === 'playlists') return activePlaylist?.tracks || [];
     return [];
-  }, [activePlaylist?.tracks, cloudTracks, view]);
+  }, [activePlaylist?.tracks, view, visibleTracks]);
   const selectedTracks = useMemo(
     () => selectableTracks.filter((track) => selectedTrackIds.has(track.id)),
     [selectableTracks, selectedTrackIds],
@@ -293,10 +233,6 @@ export default function App() {
   useEffect(() => {
     applyThemeColors(primaryColor, secondaryColor);
   }, [primaryColor, secondaryColor]);
-
-  useEffect(() => {
-    writeBooleanSetting(PWA_LOCK_MODE_KEY, pwaLockMode);
-  }, [pwaLockMode]);
 
   useEffect(() => {
     setSelectedTrackIds(new Set());
@@ -330,7 +266,6 @@ export default function App() {
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;
-    youtubePlayerRef.current?.setVolume(Math.round(volume * 100));
     if (nativeAudioActiveRef.current) {
       void setNativeAudioVolume(volume);
     }
@@ -389,11 +324,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    loadYouTubeIframeApi().catch(() => undefined);
-  }, [user]);
-
-  useEffect(() => {
     if (!('mediaSession' in navigator)) return;
     try {
       navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
@@ -444,6 +374,10 @@ export default function App() {
       nexttrack: () => playOffset(1, { skipProbe: true }),
       seekbackward: () => seekCurrentTrack(Math.max(0, currentTime - 10)),
       seekforward: () => seekCurrentTrack(Math.min(duration || currentTime + 10, currentTime + 10)),
+      seekto: (details) => {
+        if (typeof details.seekTime === 'number') seekCurrentTrack(details.seekTime);
+      },
+      stop: () => stopCurrentPlayback(),
     };
 
     (Object.keys(handlers) as MediaSessionAction[]).forEach((action) => {
@@ -508,15 +442,6 @@ export default function App() {
     };
   }, [currentTrack?.id, currentTrack?.source, playing]);
 
-  useEffect(() => () => {
-    if (youtubeProgressTimerRef.current) {
-      window.clearInterval(youtubeProgressTimerRef.current);
-      youtubeProgressTimerRef.current = null;
-    }
-    youtubePlayerRef.current?.destroy();
-    youtubePlayerRef.current = null;
-  }, []);
-
   const refreshHealth = useCallback(async () => {
     setHealthLoading(true);
     try {
@@ -529,28 +454,6 @@ export default function App() {
       setHasFlowifyApi(hasYtdlpAudioApi());
     } finally {
       setHealthLoading(false);
-    }
-  }, []);
-
-  const loadTrending = useCallback(async () => {
-    setLoading(true);
-    setMessage('');
-    try {
-      if (!getYoutubeApiKey()) {
-        setTracks([]);
-        setNextPageToken('');
-        setView('home');
-        return;
-      }
-      const result = await getTrending();
-      setTracks(result.tracks);
-      setNextPageToken('');
-      setView('home');
-    } catch (error) {
-      setMessage(errorMessage(error));
-      setTracks([]);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -765,8 +668,7 @@ export default function App() {
     loadSavedTracks(user);
     loadCloudTracks(user);
     loadPlaylists(user);
-    loadTrending();
-  }, [loadCloudTracks, loadProfile, loadSavedTracks, loadPlaylists, loadTrending, user]);
+  }, [loadCloudTracks, loadProfile, loadSavedTracks, loadPlaylists, user]);
 
   useEffect(() => {
     if (!user) return undefined;
@@ -871,10 +773,9 @@ export default function App() {
     setProfileAvatarUrl('');
     setPasswordRecovery(false);
     setNewPassword('');
-    setTracks([]);
     queueRef.current = [];
     queueIndexRef.current = -1;
-    stopYouTubePlayer();
+    stopCurrentPlayback();
     setCurrentTrack(null);
     setPlaying(false);
     setSidebarOpen(false);
@@ -882,38 +783,9 @@ export default function App() {
 
   const submitSearch = async (event?: FormEvent) => {
     event?.preventDefault();
-    const cleanQuery = query.trim();
-    if (!cleanQuery) return;
-
-    setLoading(true);
     setMessage('');
-    try {
-      const result = cleanQuery.includes('youtu')
-        ? await resolveYouTubeUrl(cleanQuery)
-        : await searchTracks(cleanQuery);
-      setTracks(result.tracks);
-      setNextPageToken(result.nextPageToken || '');
-      setView('search');
-      setSidebarOpen(false);
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadMore = async () => {
-    if (!nextPageToken || loading || !query.trim()) return;
-    setLoading(true);
-    try {
-      const result = await searchTracks(query.trim(), nextPageToken);
-      setTracks((previous) => [...previous, ...result.tracks]);
-      setNextPageToken(result.nextPageToken || '');
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
+    if (view !== 'playlists') setView('cloud');
+    setSidebarOpen(false);
   };
 
   const createPlaylist = async (event: FormEvent) => {
@@ -1071,19 +943,15 @@ export default function App() {
 
   const saveSettings = async (event: FormEvent) => {
     event.preventDefault();
-    saveYoutubeApiKey(settingsYoutubeKey);
     if (settingsFlowifyApiUrl.trim()) {
       saveFlowifyApiBaseUrl(settingsFlowifyApiUrl);
     } else {
       clearFlowifyApiBaseUrl();
     }
-    setSettingsYoutubeKey(getYoutubeApiKey());
     setSettingsFlowifyApiUrl(getFlowifyApiBaseUrl());
-    setHasYoutubeKey(Boolean(getYoutubeApiKey()));
     setHasFlowifyApi(hasYtdlpAudioApi());
     setMessage('Parametres sauvegardes.');
     await refreshHealth();
-    if (user) await loadTrending();
   };
 
   const saveProfile = async (event: FormEvent) => {
@@ -1203,14 +1071,6 @@ export default function App() {
     };
     reader.onerror = () => setMessage('Impossible de charger cette image.');
     reader.readAsDataURL(file);
-  };
-
-  const removeYoutubeKey = async () => {
-    clearYoutubeApiKey();
-    setSettingsYoutubeKey('');
-    setHasYoutubeKey(false);
-    setMessage('Cle YouTube supprimee de cet appareil.');
-    await refreshHealth();
   };
 
   const removeFlowifyApiUrl = async () => {
@@ -1366,7 +1226,11 @@ export default function App() {
     const audio = audioRef.current;
     audio?.pause();
     audio?.removeAttribute('src');
-    stopYouTubePlayer();
+    pwaCloudQueueStreamActiveRef.current = false;
+    if (nativeAudioActiveRef.current) {
+      nativeAudioActiveRef.current = false;
+      void stopNativeAudio();
+    }
     setCurrentTrack(null);
     setPlaying(false);
     setCurrentTime(0);
@@ -1560,82 +1424,9 @@ export default function App() {
     setSidebarOpen(false);
   };
 
-  const openTrending = () => {
+  const openCloud = () => {
+    setView('cloud');
     setSidebarOpen(false);
-    void loadTrending();
-  };
-
-  const stopYouTubeProgress = () => {
-    if (!youtubeProgressTimerRef.current) return;
-    window.clearInterval(youtubeProgressTimerRef.current);
-    youtubeProgressTimerRef.current = null;
-  };
-
-  const startYouTubeProgress = () => {
-    stopYouTubeProgress();
-    youtubeProgressTimerRef.current = window.setInterval(() => {
-      const player = youtubePlayerRef.current;
-      if (!player) return;
-      const nextTime = player.getCurrentTime();
-      const nextDuration = player.getDuration();
-      if (Number.isFinite(nextTime)) setCurrentTime(nextTime);
-      if (Number.isFinite(nextDuration) && nextDuration > 0) setDuration(nextDuration);
-    }, 500);
-  };
-
-  const ensureYouTubePlayer = async () => {
-    if (youtubePlayerRef.current) return youtubePlayerRef.current;
-    const api = await loadYouTubeIframeApi();
-    const container = youtubeContainerRef.current;
-    if (!container) throw new Error('Lecteur YouTube indisponible.');
-
-    container.innerHTML = '';
-    const target = document.createElement('div');
-    container.appendChild(target);
-
-    const player = await new Promise<YouTubePlayer>((resolve) => {
-      const nextPlayer = new api.Player(target, {
-        height: '90',
-        width: '160',
-        playerVars: {
-          autoplay: 1,
-          controls: 0,
-          disablekb: 1,
-          modestbranding: 1,
-          playsinline: 1,
-          rel: 0,
-        },
-        events: {
-          onReady: (event) => {
-            event.target.setVolume(Math.round(volume * 100));
-            resolve(event.target);
-          },
-          onStateChange: (event) => {
-            if (event.data === api.PlayerState.PLAYING || event.data === api.PlayerState.BUFFERING) {
-              setPlaying(true);
-              startYouTubeProgress();
-            }
-            if (event.data === api.PlayerState.PAUSED) {
-              setPlaying(false);
-              stopYouTubeProgress();
-            }
-            if (event.data === api.PlayerState.ENDED) {
-              stopYouTubeProgress();
-              advanceFromPlaybackEnd();
-            }
-          },
-        },
-      });
-      youtubePlayerRef.current = nextPlayer;
-    });
-
-    return player;
-  };
-
-  const stopYouTubePlayer = () => {
-    stopYouTubeProgress();
-    youtubePlayerRef.current?.stopVideo();
-    setYoutubeVideoId('');
   };
 
   const playTrack = async (track: Track, list = visibleTracks, index = 0, options: PlayTrackOptions = {}) => {
@@ -1661,28 +1452,12 @@ export default function App() {
       }
       audio?.pause();
       audio?.removeAttribute('src');
-      setYoutubeVideoId(track.id);
-      try {
-        const player = await ensureYouTubePlayer();
-        player.setVolume(Math.round(volume * 100));
-        player.loadVideoById(track.id);
-        player.playVideo();
-        startYouTubeProgress();
-      } catch (error) {
-        setPlaying(false);
-        setMessage(errorMessage(error));
-      }
+      setPlaying(false);
+      setMessage('Ce titre n est pas un fichier Cloud. Importe-le dans le Cloud pour le lire proprement.');
       return;
     }
 
     if (!audio) return;
-    stopYouTubePlayer();
-    const source = cloudStreamUrl(track);
-    if (!source) {
-      setPlaying(false);
-      setMessage('Fichier Cloud introuvable.');
-      return;
-    }
 
     const nativeQueue = hasNativeAudio() && list.every((item) => item.source === 'cloud')
       ? toNativeAudioQueue(list)
@@ -1714,7 +1489,7 @@ export default function App() {
       void stopNativeAudio();
     }
 
-    const pwaQueueTracks = pwaLockMode && !hasNativeAudio()
+    const pwaQueueTracks = !hasNativeAudio()
       ? getPwaCloudQueueTracks(list, index, shuffleEnabledRef.current)
       : [];
     if (pwaQueueTracks.length > 1) {
@@ -1748,22 +1523,21 @@ export default function App() {
       return;
     }
 
-    if (!options.skipProbe) {
-      setMessage('Preparation audio Cloud...');
-      try {
-        await probeAudioSource(source);
-        setMessage('');
-        getHealth().then((nextHealth) => {
-          setHealth(nextHealth);
-          setHasFlowifyApi(hasYtdlpAudioApi());
-          setSettingsFlowifyApiUrl((current) => current || getFlowifyApiBaseUrl());
-        }).catch(() => undefined);
-      } catch (error) {
-        setPlaying(false);
-        setMessage(errorMessage(error));
-        return;
-      }
+    let source = '';
+    try {
+      source = await resolveCloudPlaybackUrl(track);
+    } catch (error) {
+      setPlaying(false);
+      setMessage(errorMessage(error));
+      return;
     }
+    if (!source) {
+      setPlaying(false);
+      setMessage('Fichier Cloud introuvable.');
+      return;
+    }
+
+    if (!options.skipProbe) setMessage('');
 
     audio.pause();
     audio.removeAttribute('src');
@@ -1784,8 +1558,6 @@ export default function App() {
     try {
       if (currentTrack?.source === 'cloud' && nativeAudioActiveRef.current) {
         void seekNativeAudio(nextTime);
-      } else if (currentTrack?.source !== 'cloud') {
-        youtubePlayerRef.current?.seekTo(nextTime, true);
       } else if (audioRef.current) {
         audioRef.current.currentTime = nextTime;
       }
@@ -1799,17 +1571,7 @@ export default function App() {
     const audio = audioRef.current;
     if (!currentTrack) return;
     if (currentTrack.source !== 'cloud') {
-      const player = youtubePlayerRef.current;
-      if (!player) return;
-      if (playing) {
-        player.pauseVideo();
-        setPlaying(false);
-        stopYouTubeProgress();
-      } else {
-        player.playVideo();
-        setPlaying(true);
-        startYouTubeProgress();
-      }
+      setMessage('Ce titre n est pas lisible en mode Cloud. Importe-le dans le Cloud.');
       return;
     }
     if (nativeAudioActiveRef.current) {
@@ -1931,19 +1693,6 @@ export default function App() {
     setSavedIds((previous) => new Set(previous).add(track.id));
   };
 
-  const requestDownload = async (track: Track) => {
-    setDownloadBusy((previous) => ({ ...previous, [track.id]: true }));
-    setMessage('');
-    try {
-      await downloadTrack(track);
-      setMessage('Titre telecharge via yt-dlp');
-    } catch (error) {
-      setMessage(errorMessage(error));
-    } finally {
-      setDownloadBusy((previous) => ({ ...previous, [track.id]: false }));
-    }
-  };
-
   const installApp = async () => {
     if (!installPrompt) return;
     await installPrompt.prompt();
@@ -1976,26 +1725,22 @@ export default function App() {
 
   const statusLabel = useMemo(() => {
     if (healthLoading) return 'Verification';
-    if (health?.apiReachable && health.cloudStorageAvailable && hasYoutubeKey) return 'Cloud + YouTube prets';
     if (health?.apiReachable && health.cloudStorageAvailable) return 'Cloud pret';
-    if (hasYoutubeKey) return 'YouTube pret';
     if (hasFlowifyApi && health?.apiReachable) return 'Flowify connecte';
     if (hasFlowifyApi) return 'Flowify hors ligne';
-    return 'Flowify';
-  }, [hasFlowifyApi, hasYoutubeKey, health, healthLoading]);
+    return 'Cloud local';
+  }, [hasFlowifyApi, health, healthLoading]);
 
   const heading = useMemo(() => {
     if (view === 'cloud') return 'Cloud';
     if (view === 'playlists') return activePlaylist?.name || 'Playlists';
     if (view === 'settings') return 'Parametres';
-    if (view === 'search') return 'Recherche';
-    return 'YouTube';
+    return 'Cloud';
   }, [activePlaylist?.name, view]);
 
   return (
     <div className={user ? 'app-shell' : 'app-shell auth-mode'}>
       <audio
-        crossOrigin="anonymous"
         ref={audioRef}
         preload="auto"
         playsInline
@@ -2016,8 +1761,7 @@ export default function App() {
           setPlaying(false);
           const source = event.currentTarget.currentSrc;
           const code = event.currentTarget.error?.code;
-          const sourceLabel = currentTrack?.source === 'cloud' ? 'Cloud' : 'YouTube';
-          setMessage(`Lecture ${sourceLabel} impossible${code ? ` (code ${code})` : ''}.`);
+          setMessage(`Lecture Cloud impossible${code ? ` (code ${code})` : ''}.`);
           if (source) {
             probeAudioSource(source)
               .catch((error) => setMessage(errorMessage(error)));
@@ -2073,19 +1817,15 @@ export default function App() {
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Rechercher ou coller une URL"
+                placeholder="Filtrer le Cloud ou la playlist"
               />
-              <button aria-label="Rechercher" disabled={!query.trim() || loading} type="submit">
-                {loading ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+              <button aria-label="Filtrer" type="submit">
+                <Search size={18} />
               </button>
             </form>
 
             <nav className="nav-list">
-              <button className={view === 'home' ? 'active' : ''} onClick={openTrending} type="button">
-                <Youtube size={18} />
-                YouTube
-              </button>
-              <button className={view === 'cloud' ? 'active' : ''} onClick={() => openView('cloud')} type="button">
+              <button className={view === 'cloud' ? 'active' : ''} onClick={openCloud} type="button">
                 <Cloud size={18} />
                 Cloud
                 <span>{cloudTracks.length}</span>
@@ -2210,7 +1950,7 @@ export default function App() {
           <>
             <header className={view === 'playlists' ? 'topbar playlist-topbar' : 'topbar'}>
               <div>
-                <p>{view === 'home' ? 'YouTube' : view}</p>
+                <p>{view === 'playlists' ? 'playlist' : view === 'settings' ? 'parametres' : 'cloud'}</p>
                 <h1>{heading}</h1>
               </div>
               <div className="top-actions">
@@ -2296,16 +2036,7 @@ export default function App() {
                 <form className="settings-card settings-form" onSubmit={saveSettings}>
                   <h2>Connexions</h2>
                   <label>
-                    Cle YouTube Data API v3
-                    <input
-                      value={settingsYoutubeKey}
-                      onChange={(event) => setSettingsYoutubeKey(event.target.value)}
-                      placeholder="AIza..."
-                      type="password"
-                    />
-                  </label>
-                  <label>
-                    URL API Flowify yt-dlp
+                    URL API Flowify Cloud
                     <input
                       value={settingsFlowifyApiUrl}
                       onChange={(event) => setSettingsFlowifyApiUrl(event.target.value)}
@@ -2318,11 +2049,6 @@ export default function App() {
                       <Settings size={16} />
                       Sauvegarder
                     </button>
-                    {hasYoutubeKey && (
-                      <button className="muted-action" onClick={removeYoutubeKey} type="button">
-                        Supprimer la cle
-                      </button>
-                    )}
                     {hasFlowifyApi && (
                       <button className="muted-action" onClick={removeFlowifyApiUrl} type="button">
                         Supprimer l'URL API
@@ -2382,20 +2108,13 @@ export default function App() {
                     </button>
                   </div>
                   <span>
-                    YouTube: {hasYoutubeKey ? 'pret' : 'sans cle'} - Cloud: {health?.cloudStorageAvailable ? 'pret' : 'a verifier'}
+                    Cloud: {health?.cloudStorageAvailable ? 'pret' : 'a verifier'} - PWA continu automatique
                   </span>
                 </article>
                 <article className="settings-card">
                   <h2>PWA</h2>
-                  <label className="toggle-row">
-                    <input
-                      checked={pwaLockMode}
-                      onChange={(event) => setPwaLockMode(event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>Mode verrouille</span>
-                  </label>
-                  <span>Cloud continu pour ecran verrouille.</span>
+                  <p>Les playlists Cloud utilisent automatiquement un flux continu quand le navigateur le permet.</p>
+                  <span>Le lecteur reste aussi compatible Android APK.</span>
                 </article>
                 <article className="settings-card">
                   <h2>Session</h2>
@@ -2734,11 +2453,6 @@ export default function App() {
                                     <Trash2 size={17} />
                                   </button>
                                 )}
-                                {track.source !== 'cloud' && (
-                                  <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
-                                    {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
-                                  </button>
-                                )}
                               </div>
                             </article>
                           )) : (
@@ -2778,12 +2492,7 @@ export default function App() {
                       </div>
                     )}
                     <section className="track-grid">
-                      {loading && !visibleTracks.length ? (
-                        <div className="empty-state">
-                          <Loader2 className="spin" size={28} />
-                          Chargement
-                        </div>
-                      ) : visibleTracks.length ? (
+                      {visibleTracks.length ? (
                         visibleTracks.map((track, index) => (
                           <article
                             className={[
@@ -2827,11 +2536,6 @@ export default function App() {
                                   {cloudDeleteBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Trash2 size={17} />}
                                 </button>
                               )}
-                              {track.source !== 'cloud' && (
-                                <button aria-label="Telecharger via yt-dlp" disabled={downloadBusy[track.id]} onClick={() => requestDownload(track)} type="button">
-                                  {downloadBusy[track.id] ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
-                                </button>
-                              )}
                             </div>
                           </article>
                         ))
@@ -2843,12 +2547,6 @@ export default function App() {
                       )}
                     </section>
 
-                    {nextPageToken && view === 'search' && (
-                      <button className="load-more" disabled={loading} onClick={loadMore} type="button">
-                        {loading ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
-                        Charger plus
-                      </button>
-                    )}
                   </>
                 )}
               </>
@@ -2928,9 +2626,6 @@ export default function App() {
             />
             <span>{formatTime(duration)}</span>
           </div>
-          <div className={youtubeVideoId ? 'youtube-player-shell active' : 'youtube-player-shell'} aria-hidden={currentTrack?.source === 'cloud'}>
-            <div ref={youtubeContainerRef} />
-          </div>
         </footer>
       )}
     </div>
@@ -2960,25 +2655,6 @@ function readThemeColor(key: string, fallback: string) {
   }
 }
 
-function readBooleanSetting(key: string, fallback: boolean) {
-  try {
-    const saved = localStorage.getItem(key);
-    if (saved === '1') return true;
-    if (saved === '0') return false;
-  } catch {
-    undefined;
-  }
-  return fallback;
-}
-
-function writeBooleanSetting(key: string, value: boolean) {
-  try {
-    localStorage.setItem(key, value ? '1' : '0');
-  } catch {
-    undefined;
-  }
-}
-
 function applyThemeColors(primary: string, secondary: string) {
   if (typeof document === 'undefined') return;
   const nextPrimary = isThemeColor(primary) ? primary : DEFAULT_PRIMARY_COLOR;
@@ -2990,30 +2666,6 @@ function applyThemeColors(primary: string, secondary: string) {
   root.style.setProperty('--accent-primary', nextPrimary);
   root.style.setProperty('--accent-secondary', nextSecondary);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', nextSecondary);
-}
-
-function loadYouTubeIframeApi(): Promise<YouTubeApi> {
-  if (window.YT?.Player) return Promise.resolve(window.YT);
-  if (youtubeApiPromise) return youtubeApiPromise;
-
-  youtubeApiPromise = new Promise((resolve, reject) => {
-    const previousReady = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
-      previousReady?.();
-      if (window.YT?.Player) resolve(window.YT);
-      else reject(new Error('Lecteur YouTube indisponible.'));
-    };
-
-    if (!document.querySelector('script[src="https://www.youtube.com/iframe_api"]')) {
-      const script = document.createElement('script');
-      script.src = 'https://www.youtube.com/iframe_api';
-      script.async = true;
-      script.onerror = () => reject(new Error('Impossible de charger le lecteur YouTube.'));
-      document.head.appendChild(script);
-    }
-  });
-
-  return youtubeApiPromise;
 }
 
 function displayNameFromEmail(value?: string | null) {
@@ -3151,6 +2803,16 @@ function parseDisplayDuration(value: string) {
 function titleFromFile(value: string) {
   const clean = value.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
   return clean || 'Musique Cloud';
+}
+
+function filterTracks(tracks: Track[], query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return tracks;
+  return tracks.filter((track) => (
+    track.title.toLowerCase().includes(needle) ||
+    track.channel.toLowerCase().includes(needle) ||
+    (track.fileName || '').toLowerCase().includes(needle)
+  ));
 }
 
 function getPlaylistStartIndex(length: number, shuffle: boolean) {
@@ -3378,9 +3040,6 @@ function readApiError(value: string) {
 
 function errorMessage(error: unknown) {
   const message = readableErrorMessage(error);
-  if (message.includes('Entre ta cle YouTube Data API v3')) {
-    return '';
-  }
   if (message.includes('playlists.invite_code')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
   }
@@ -3413,15 +3072,6 @@ function errorMessage(error: unknown) {
   }
   if (message.includes('row-level security policy') && message.includes('playlist_tracks')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
-  }
-  if (message.includes('The provided YouTube account cookies are no longer valid')) {
-    return 'Cookies YouTube invalides sur Render: reexporte un cookies.txt recent, remplace YTDLP_COOKIES_BASE64, puis redeploie.';
-  }
-  if (message.includes("Sign in to confirm you're not a bot") || message.includes('HTTP Error 429')) {
-    return 'YouTube bloque Render: ajoute ou renouvelle les cookies YouTube dans YTDLP_COOKIES_BASE64.';
-  }
-  if (message.includes('Requested format is not available')) {
-    return 'Format audio YouTube bloque par yt-dlp: verifie les cookies YouTube Render puis redeploie.';
   }
   if (message.includes('Could not find the function public.add_track_to_playlist')) {
     return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';

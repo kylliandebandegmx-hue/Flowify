@@ -6,6 +6,7 @@ const YOUTUBE_API_BASE = 'https://www.googleapis.com/youtube/v3';
 let flowifyApiBase = normalizeApiBase(
   import.meta.env.VITE_FLOWIFY_API_URL || readStorage(FLOWIFY_API_STORAGE_KEY),
 );
+const signedCloudUrlCache = new Map<string, { expiresAt: number; url: string }>();
 
 export function getYoutubeApiKey(): string {
   return readStorage(YOUTUBE_KEY_STORAGE_KEY);
@@ -204,6 +205,33 @@ export async function createCloudQueueStream(tracks: Track[]): Promise<{ id: str
   };
 }
 
+export async function resolveCloudPlaybackUrl(track: Track): Promise<string> {
+  await detectApiHealth();
+  if (flowifyApiBase && track.storageKey) {
+    const cached = signedCloudUrlCache.get(track.storageKey);
+    if (cached && cached.expiresAt > Date.now() + 60_000) return cached.url;
+
+    try {
+      const response = await fetch(apiUrl(`/api/cloud/signed-url?key=${encodeURIComponent(track.storageKey)}`), {
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && typeof payload.url === 'string' && payload.url) {
+        const expiresIn = Number(payload.expiresIn || 3600);
+        signedCloudUrlCache.set(track.storageKey, {
+          expiresAt: Date.now() + Math.max(60, expiresIn - 30) * 1000,
+          url: payload.url,
+        });
+        return payload.url;
+      }
+    } catch {
+      // Fall back to the public URL or the API proxy below.
+    }
+  }
+
+  return cloudStreamUrl(track);
+}
+
 export function streamUrl(track: Track | string): string {
   if (!flowifyApiBase) return '';
   const videoId = typeof track === 'string' ? track : track.id;
@@ -211,10 +239,11 @@ export function streamUrl(track: Track | string): string {
 }
 
 export function cloudStreamUrl(track: Track): string {
+  if (track.url) return track.url;
   if (flowifyApiBase && track.storageKey) {
     return apiUrl(`/api/cloud/stream?key=${encodeURIComponent(track.storageKey)}&play=${Date.now()}`);
   }
-  return track.url || '';
+  return '';
 }
 
 export function hasYtdlpAudioApi(): boolean {

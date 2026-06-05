@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -246,6 +247,26 @@ app.get('/api/cloud/stream', async (req, res, next) => {
       return;
     }
     Readable.fromWeb(object.Body.transformToWebStream()).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/cloud/signed-url', async (req, res, next) => {
+  try {
+    if (!hasR2Config()) throw httpError(503, 'Cloud R2 non configure sur l API Flowify');
+    const key = ensureCloudKey(String(req.query.key || ''));
+    const expiresIn = clamp(Number(req.query.expiresIn || 3600), 60, 3600);
+    const url = await getSignedUrl(getR2Client(), new GetObjectCommand({
+      Bucket: r2Bucket,
+      Key: key,
+    }), { expiresIn });
+
+    res.json({
+      key,
+      url,
+      expiresIn,
+    });
   } catch (err) {
     next(err);
   }
