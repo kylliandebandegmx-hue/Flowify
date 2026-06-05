@@ -241,6 +241,10 @@ app.get('/api/cloud/stream', async (req, res, next) => {
 
     res.status(object.ContentRange ? 206 : 200);
     res.setHeader('Content-Type', contentType);
+    res.setHeader('Access-Control-Allow-Origin', corsOrigin === 'true' ? '*' : corsOrigin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS, HEAD');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range, Accept');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
     if (object.ContentLength !== undefined) res.setHeader('Content-Length', String(object.ContentLength));
     if (object.ContentRange) res.setHeader('Content-Range', object.ContentRange);
     res.setHeader('Accept-Ranges', 'bytes');
@@ -1159,9 +1163,13 @@ async function cloudBodyToReadable(body) {
 
 function ensureCloudKey(value) {
   const key = value.trim();
-  if (!key || !key.startsWith('cloud/') || key.includes('..')) {
-    throw httpError(400, 'Cle cloud invalide');
+  if (!key) {
+    throw httpError(400, 'Cle cloud manquante');
   }
+  if (key.includes('..')) {
+    throw httpError(400, 'Cle cloud invalide: traversal detecte');
+  }
+  // Accepter aussi les clés sans le préfixe 'cloud/' pour la rétrocompatibilité
   return key;
 }
 
