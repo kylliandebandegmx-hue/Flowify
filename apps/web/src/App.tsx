@@ -3353,22 +3353,22 @@ function readApiError(value: string) {
 function errorMessage(error: unknown) {
   const message = readableErrorMessage(error);
   if (message.includes('playlists.invite_code')) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour le schema des playlists.';
   }
   if (message.includes("Could not find the 'invite_code' column")) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour le schema des playlists.';
   }
   if (message.includes("Could not find the 'cover_url' column") || message.includes('playlists.cover_url')) {
-    return 'Base Supabase pas a jour: ajoute la colonne cover_url aux playlists avec supabase/fix-existing-database.sql.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour le schema des playlists.';
   }
   if (message.includes("Could not find the table 'public.saved_tracks'")) {
-    return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour le schema des donnees sauvegardees.';
   }
   if (message.includes("Could not find the table 'public.cloud_tracks'")) {
-    return 'Base Supabase incomplete: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour les donnees de Cloud.';
   }
   if (message.includes("Could not find the table 'public.playlists'")) {
-    return 'Base Supabase incomplete: execute supabase/schema.sql complet dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour le schema des playlists.';
   }
   if (message.includes('Cloud R2 non configure')) {
     return 'Cloud R2 non configure sur Render: ajoute R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY et R2_BUCKET.';
@@ -3380,35 +3380,35 @@ function errorMessage(error: unknown) {
     return 'API Flowify inaccessible depuis le navigateur. Attends le reveil Render puis actualise.';
   }
   if (message.includes('playlist_members_1.joined_at')) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour les playlists.';
   }
   if (message.includes('row-level security policy') && message.includes('playlist_tracks')) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour les playlists.';
   }
   if (message.includes('Could not find the function public.add_track_to_playlist')) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour l ajout de pistes.';
   }
   if (message.includes('Could not find the function public.delete_cloud_track')) {
-    return 'Base Supabase pas a jour: execute le bloc SQL final pour les musiques Cloud.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour la suppression Cloud.';
   }
   if (message.includes('no unique or exclusion constraint matching the ON CONFLICT specification')) {
-    return 'Base Supabase pas a jour: execute le bloc SQL final pour corriger add_track_to_playlist.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour la mise a jour de playlist.';
   }
   if (message.includes('null value in column "track_id"') && message.includes('playlist_tracks')) {
-    return 'Base Supabase pas a jour: execute le bloc SQL final pour rendre track_id compatible.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour les pistes de playlist.';
   }
   if (message.includes('Could not find the function public.delete_playlist')) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour la suppression de playlist.';
   }
   if (
     message.includes('Could not find the function public.update_playlist_name') ||
     message.includes('Could not find the function public.update_playlist_member_role') ||
     message.includes('Could not find the function public.remove_playlist_member')
   ) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql pour activer renommage et permissions.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour les permissions des membres.';
   }
   if (message.includes('Could not find the function public.join_playlist_by_code')) {
-    return 'Base Supabase pas a jour: execute supabase/fix-existing-database.sql dans le SQL editor.';
+    return 'Base Flowify pas a jour: le backend doit etre mis a jour pour la gestion des codes d invitation.';
   }
   if (message.toLowerCase().includes('code invitation invalide')) {
     return 'Code invitation invalide.';

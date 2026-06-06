@@ -28,15 +28,9 @@ Build GitHub :
 
 L'APK debug est publie comme artifact `Flowify-debug-apk`.
 
-## PocketBase
+## Backend gratuit intégré
 
-Deploy PocketBase et configurez l'URL publique dans `VITE_POCKETBASE_URL`.
-
-- Créez les collections `profiles`, `playlists`, `playlist_members`, `playlist_tracks`, `cloud_tracks` et `saved_tracks`.
-- PocketBase remplace Supabase pour l'authentification et les metadonnees.
-- Les playlists et les membres sont synchronisés via le service PocketBase.
-
-Si vous voulez automatiser les backups, copiez régulièrement le fichier `pb_data/pocketbase.db` dans Cloudflare R2.
+Flowify ne requiert plus PocketBase ou Supabase. Le backend `apps/api` gère l'authentification et les données de playlist en local, avec un stockage JSON/SQLite gratuit et des jetons JWT.
 
 ## Cle YouTube
 

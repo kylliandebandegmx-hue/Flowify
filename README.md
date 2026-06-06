@@ -33,15 +33,20 @@ CLOUD_UPLOAD_LIMIT=80mb
 `R2_PUBLIC_BASE_URL` peut rester vide : Flowify passe alors par `/api/cloud/stream`, ce qui evite une configuration CORS R2 en plus.
 `R2_BUCKET` doit etre seulement le nom du bucket, sans URL ni account ID.
 
-## PocketBase
+## Backend gratuit intégré
 
-Ce projet utilise maintenant PocketBase pour l'authentification, les profils, les playlists, les membres, les points d'invite et les metadonnees de Cloud.
+Flowify n'utilise plus PocketBase ou Supabase. L'API `apps/api` gère maintenant:
 
-1. Deploie PocketBase sur Render ou un autre hebergeur en exposant `VITE_POCKETBASE_URL`.
-2. Cree les collections suivantes : `profiles`, `playlists`, `playlist_members`, `playlist_tracks`, `cloud_tracks`, `saved_tracks`.
-3. Assure-toi que `apps/web/.env` ou la variable GitHub `VITE_POCKETBASE_URL` pointe vers l'URL publique de PocketBase.
+- l'authentification JWT,
+- les utilisateurs,
+- les profils,
+- les playlists,
+- les membres de playlists,
+- les pistes de playlist,
+- les musiques cloud,
+- les pistes sauvegardées.
 
-Les donnees audio continuent d'etre stockees dans Cloudflare R2 via `apps/api`.
+Tu dois juste deployer `apps/api` sur Render avec `render.yaml` et configurer Cloudflare R2 pour l'audio. L'URL API est ensuite utilisée par le frontend depuis `apps/web`.
 
 ## GitHub
 

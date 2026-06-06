@@ -1,3 +1,21 @@
+FROM node:22-bookworm-slim AS build
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY package-lock.json ./
+COPY apps/api/package*.json apps/api/
+COPY apps/web/package*.json apps/web/
+
+RUN npm install
+
+COPY apps/web ./apps/web
+RUN npm --workspace apps/web run build
+
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
@@ -9,12 +27,13 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY package*.json ./
+COPY package-lock.json ./
 COPY apps/api/package*.json apps/api/
-COPY apps/web/dist ./apps/web/dist
 
 RUN npm ci --omit=dev --workspace apps/api
 
 COPY apps/api ./apps/api
+COPY --from=build /app/apps/web/dist ./apps/web/dist
 
 ENV PORT=8787
 ENV YTDLP_PATH=yt-dlp

@@ -39,16 +39,3 @@ services:
       - key: CLOUD_UPLOAD_LIMIT
         value: 80mb
 
-  - type: web
-    name: flowify-pocketbase
-    runtime: docker
-    plan: free
-    dockerfilePath: ./pocketbase.Dockerfile
-    dockerContext: .
-    healthCheckPath: /
-    autoDeployTrigger: commit
-    envVars:
-      - key: POCKETBASE_ADMIN_EMAIL
-        sync: false
-      - key: POCKETBASE_ADMIN_PASSWORD
-        sync: false
