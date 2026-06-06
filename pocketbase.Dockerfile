@@ -3,7 +3,7 @@ FROM golang:1.25-alpine AS builder
 RUN apk add --no-cache git
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/pocketbase/pocketbase.git .
-RUN go build -o /app/pocketbase ./cmd/pocketbase
+RUN go build -o /app/pocketbase .
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates
