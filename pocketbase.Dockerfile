@@ -5,16 +5,16 @@ ARG TARGETARCH
 RUN apk add --no-cache curl unzip ca-certificates
 
 WORKDIR /tmp
-# Determine latest tag and download matching prebuilt binary
+# Determine latest tag and download matching prebuilt binary (follow redirects and fail on HTTP errors)
 RUN set -eux; \
-	TAG_URL=$(curl -sI -o /dev/null -w '%{url_effective}' https://github.com/pocketbase/pocketbase/releases/latest); \
+	TAG_URL=$(curl -sSL -o /dev/null -w '%{url_effective}' https://github.com/pocketbase/pocketbase/releases/latest); \
 	TAG=${TAG_URL##*/}; \
 	TAG_NO_V=${TAG#v}; \
 	if [ "${TARGETARCH:-amd64}" = "arm64" ] || [ "${TARGETARCH:-amd64}" = "aarch64" ]; then ARCH=arm64; else ARCH=amd64; fi; \
 	ASSET_NAME="pocketbase_${TAG_NO_V}_linux_${ARCH}.zip"; \
 	DOWNLOAD_URL="https://github.com/pocketbase/pocketbase/releases/download/${TAG}/${ASSET_NAME}"; \
 	echo "Downloading ${DOWNLOAD_URL}"; \
-	curl -L -o /tmp/pocketbase.zip "${DOWNLOAD_URL}"; \
+	curl -fL -o /tmp/pocketbase.zip "${DOWNLOAD_URL}" || (echo "Download failed, dumping HTTP response for debugging:"; curl -sSL "${DOWNLOAD_URL}" | sed -n '1,200p'; false); \
 	unzip /tmp/pocketbase.zip -d /app; \
 	chmod +x /app/pocketbase; \
 	ls -lh /app/pocketbase
