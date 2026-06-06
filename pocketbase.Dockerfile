@@ -10,6 +10,7 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/pocketbase ./pocketbase
 RUN mkdir -p /app/pb_data
+RUN chmod +x ./pocketbase
 
 ENV PORT=8090
 EXPOSE 8090
