@@ -1,11 +1,23 @@
-FROM golang:1.25-alpine AS builder
+FROM alpine:3.22 AS builder
+ARG TARGETARCH
 
-RUN apk add --no-cache git
-WORKDIR /src
-RUN git clone --depth 1 https://github.com/pocketbase/pocketbase.git .
+# install curl and unzip to fetch prebuilt PocketBase release
+RUN apk add --no-cache curl unzip ca-certificates
+
+WORKDIR /tmp
+# Determine latest tag and download matching prebuilt binary
 RUN set -eux; \
-	if [ "${TARGETARCH:-amd64}" = "arm64" ] || [ "${TARGETARCH:-amd64}" = "aarch64" ]; then GOARCH=arm64; else GOARCH=amd64; fi; \
-	CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -ldflags "-s -w" -o /app/pocketbase .
+	TAG_URL=$(curl -sI -o /dev/null -w '%{url_effective}' https://github.com/pocketbase/pocketbase/releases/latest); \
+	TAG=${TAG_URL##*/}; \
+	TAG_NO_V=${TAG#v}; \
+	if [ "${TARGETARCH:-amd64}" = "arm64" ] || [ "${TARGETARCH:-amd64}" = "aarch64" ]; then ARCH=arm64; else ARCH=amd64; fi; \
+	ASSET_NAME="pocketbase_${TAG_NO_V}_linux_${ARCH}.zip"; \
+	DOWNLOAD_URL="https://github.com/pocketbase/pocketbase/releases/download/${TAG}/${ASSET_NAME}"; \
+	echo "Downloading ${DOWNLOAD_URL}"; \
+	curl -L -o /tmp/pocketbase.zip "${DOWNLOAD_URL}"; \
+	unzip /tmp/pocketbase.zip -d /app; \
+	chmod +x /app/pocketbase; \
+	ls -lh /app/pocketbase
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates
