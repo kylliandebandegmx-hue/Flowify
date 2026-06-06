@@ -28,15 +28,15 @@ Build GitHub :
 
 L'APK debug est publie comme artifact `Flowify-debug-apk`.
 
-## Supabase
+## PocketBase
 
-Execute `supabase/schema.sql`, puis verifie :
+Deploy PocketBase et configurez l'URL publique dans `VITE_POCKETBASE_URL`.
 
-- Auth email/password active.
-- Les politiques RLS sont activees.
-- Supabase Realtime est actif pour `playlists`, `playlist_members` et `playlist_tracks`.
+- Créez les collections `profiles`, `playlists`, `playlist_members`, `playlist_tracks`, `cloud_tracks` et `saved_tracks`.
+- PocketBase remplace Supabase pour l'authentification et les metadonnees.
+- Les playlists et les membres sont synchronisés via le service PocketBase.
 
-Si la base existait deja avant les playlists partagees, execute aussi `supabase/fix-existing-database.sql`.
+Si vous voulez automatiser les backups, copiez régulièrement le fichier `pb_data/pocketbase.db` dans Cloudflare R2.
 
 ## Cle YouTube
 

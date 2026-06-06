@@ -37,8 +37,7 @@ jobs:
         run: npm run build:web
         env:
           VITE_BASE_PATH: /
-          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL || 'https://gjphlxpdgwbwfdgayhis.supabase.co' }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_X850AIpTtbPs0VHDmkNAmg_7PLHRaHa' }}
+          VITE_POCKETBASE_URL: ${{ vars.POCKETBASE_URL || 'https://flowify-pocketbase.onrender.com' }}
           VITE_FLOWIFY_API_URL: ${{ vars.FLOWIFY_API_URL || '' }}
 
       - name: Sync Capacitor

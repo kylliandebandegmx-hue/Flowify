@@ -33,11 +33,15 @@ CLOUD_UPLOAD_LIMIT=80mb
 `R2_PUBLIC_BASE_URL` peut rester vide : Flowify passe alors par `/api/cloud/stream`, ce qui evite une configuration CORS R2 en plus.
 `R2_BUCKET` doit etre seulement le nom du bucket, sans URL ni account ID.
 
-## Supabase
+## PocketBase
 
-Execute `supabase/schema.sql` dans le SQL editor Supabase. Le schema gere les comptes, titres sauvegardes, musiques Cloud, playlists, membres, codes d'invitation et Realtime.
+Ce projet utilise maintenant PocketBase pour l'authentification, les profils, les playlists, les membres, les points d'invite et les metadonnees de Cloud.
 
-Si ta base existe deja et affiche une erreur `invite_code` ou `joined_at`, execute `supabase/fix-existing-database.sql` dans le SQL editor Supabase.
+1. Deploie PocketBase sur Render ou un autre hebergeur en exposant `VITE_POCKETBASE_URL`.
+2. Cree les collections suivantes : `profiles`, `playlists`, `playlist_members`, `playlist_tracks`, `cloud_tracks`, `saved_tracks`.
+3. Assure-toi que `apps/web/.env` ou la variable GitHub `VITE_POCKETBASE_URL` pointe vers l'URL publique de PocketBase.
+
+Les donnees audio continuent d'etre stockees dans Cloudflare R2 via `apps/api`.
 
 ## GitHub
 

@@ -1,4 +1,3 @@
-import type { Session, User } from '@supabase/supabase-js';
 import { startAudioKeepAlive, stopAudioKeepAlive, unlockAudioContext } from './lib/audioKeepAlive';
 import {
   Check,
@@ -73,6 +72,16 @@ import {
 } from './lib/nativeAudio';
 import { isStandaloneDisplay } from './lib/pwa';
 import { supabase } from './lib/supabase';
+
+type User = {
+  id: string;
+  email: string | null;
+};
+
+type Session = {
+  user: User | null;
+};
+
 import type {
   ApiHealth,
   CloudTrackRow,
