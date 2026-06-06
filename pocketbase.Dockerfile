@@ -23,9 +23,10 @@ FROM alpine:3.22
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /app/pocketbase ./pocketbase
+COPY pocketbase-entrypoint.sh ./pocketbase-entrypoint.sh
 RUN mkdir -p /app/pb_data
-RUN chmod +x ./pocketbase
+RUN chmod +x ./pocketbase ./pocketbase-entrypoint.sh
 
 ENV PORT=8090
 EXPOSE 8090
-CMD sh -lc './pocketbase serve --http=0.0.0.0:${PORT} --dir /app/pb_data'
+CMD ["./pocketbase-entrypoint.sh"]
