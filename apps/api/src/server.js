@@ -5,12 +5,24 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  listRecords,
+  getRecord,
+  createRecord,
+  updateRecords,
+  deleteRecords,
+  upsertRecord,
+  findUserByEmail,
+  createUser,
+  verifyUserPassword,
+  updateUserPassword,
+} from './store.js';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -54,10 +66,205 @@ app.use(
   cors({
     origin: corsOrigin === 'true' ? true : corsOrigin,
     methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Range', 'X-File-Name', 'X-YouTube-Api-Key'],
+    allowedHeaders: ['Content-Type', 'Range', 'X-File-Name', 'X-YouTube-Api-Key', 'Authorization'],
     exposedHeaders: ['Content-Length', 'Content-Range', 'Accept-Ranges'],
   }),
 );
+
+function base64UrlEncode(value) {
+  return Buffer.from(value).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value) {
+  const padded = value.padEnd(value.length + ((4 - (value.length % 4)) % 4), '=');
+  return Buffer.from(padded.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}
+
+const authSecret = process.env.AUTH_JWT_SECRET || process.env.SESSION_SECRET || 'flowify-secret-change-me';
+const authTtlSeconds = Number(process.env.AUTH_JWT_TTL_SECONDS || 30 * 24 * 60 * 60);
+
+function signJwt(payload) {
+  const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const body = base64UrlEncode(JSON.stringify({ ...payload, iat: issuedAt, exp: issuedAt + authTtlSeconds }));
+  const signature = base64UrlEncode(
+    createHmac('sha256', authSecret).update(`${header}.${body}`).digest(),
+  );
+  return `${header}.${body}.${signature}`;
+}
+
+function parseJwt(token) {
+  const parts = String(token).split('.');
+  if (parts.length !== 3) return null;
+  const [headerPart, bodyPart, signaturePart] = parts;
+  const expectedSignature = base64UrlEncode(
+    createHmac('sha256', authSecret).update(`${headerPart}.${bodyPart}`).digest(),
+  );
+  if (!cryptoTimingSafeCompare(signaturePart, expectedSignature)) return null;
+  try {
+    const payload = JSON.parse(base64UrlDecode(bodyPart));
+    if (payload.exp && typeof payload.exp === 'number' && payload.exp < Math.floor(Date.now() / 1000)) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function cryptoTimingSafeCompare(a, b) {
+  const bufferA = Buffer.from(String(a), 'utf8');
+  const bufferB = Buffer.from(String(b), 'utf8');
+  if (bufferA.length !== bufferB.length) {
+    return false;
+  }
+  return timingSafeEqual(bufferA, bufferB);
+}
+
+function getAuthorizationToken(req) {
+  const header = String(req.get('Authorization') || '').trim();
+  if (!header.toLowerCase().startsWith('bearer ')) return null;
+  return header.slice(7).trim();
+}
+
+async function getAuthUser(req) {
+  const token = getAuthorizationToken(req);
+  if (!token) return null;
+  const payload = parseJwt(token);
+  if (!payload || !payload.sub) return null;
+  const user = await getRecord('users', payload.sub);
+  if (!user) return null;
+  return user;
+}
+
+function authResponse(user) {
+  const token = signJwt({ sub: user.id, email: user.email });
+  return {
+    user: {
+      id: String(user.id),
+      email: user.email || null,
+    },
+    token,
+  };
+}
+
+app.post('/api/auth/signup', async (req, res, next) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) throw httpError(400, 'Email et mot de passe requis');
+    const user = await createUser({ email, password });
+    return res.json(authResponse(user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/auth/signin', async (req, res, next) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) throw httpError(400, 'Email et mot de passe requis');
+    const user = await findUserByEmail(email);
+    if (!user || !(await verifyUserPassword(user, password))) {
+      throw httpError(401, 'Email ou mot de passe invalide');
+    }
+    return res.json(authResponse(user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/auth/me', async (req, res, next) => {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) {
+      return res.json({ user: null });
+    }
+    return res.json({ user: { id: String(user.id), email: user.email || null } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/auth/update-password', async (req, res, next) => {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) throw httpError(401, 'Utilisateur non authentifie');
+    const { password } = req.body || {};
+    if (!password) throw httpError(400, 'Nouveau mot de passe requis');
+    await updateUserPassword(user.id, password);
+    return res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/auth/reset-password', async (_req, res) => {
+  res.status(400).json({ error: 'Reset password non supporte dans cette version' });
+});
+
+app.get('/api/db/:collection', async (req, res, next) => {
+  try {
+    const items = await listRecords(req.params.collection, {
+      filter: String(req.query.filter || ''),
+      sort: String(req.query.sort || ''),
+      limit: Number(req.query.limit || 200),
+    });
+    res.json({ data: items });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/db/:collection/:id', async (req, res, next) => {
+  try {
+    const item = await getRecord(req.params.collection, String(req.params.id));
+    if (!item) {
+      return res.status(404).json({ error: 'Record introuvable' });
+    }
+    res.json({ data: item });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/db/:collection/upsert', async (req, res, next) => {
+  try {
+    const key = String(req.query.key || 'id');
+    const item = await upsertRecord(req.params.collection, req.body || {}, key);
+    res.json({ data: item });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/db/:collection', async (req, res, next) => {
+  try {
+    const item = await createRecord(req.params.collection, req.body || {});
+    res.json({ data: item });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/api/db/:collection', async (req, res, next) => {
+  try {
+    const filter = String(req.query.filter || '');
+    const items = await updateRecords(req.params.collection, req.body || {}, filter);
+    res.json({ data: items });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/db/:collection', async (req, res, next) => {
+  try {
+    const filter = String(req.query.filter || '');
+    await deleteRecords(req.params.collection, filter);
+    res.json({ data: null });
+  } catch (err) {
+    next(err);
+  }
+});
 
 app.get('/health', async (req, res) => {
   const ytdlpReady = await hasYtdlp();
